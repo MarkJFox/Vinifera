@@ -35,6 +35,7 @@
 #include "tactical.h"
 #include "tacticalext.h"
 #include "tacticalext_init.h"
+#include "technoext.h"
 #include "technotype.h"
 #include "technotypeext.h"
 #include "tibsun_globals.h"
@@ -956,6 +957,120 @@ void TacticalExt::_Draw_Screen_Text(char const* text)
             static_cast<SDLSurface*>(CompositeSurface)->ReleaseDC(hdc);
         }
     }
+}
+
+
+/**
+ *  Prefer the concrete building's primary weapon, including upgrade weapons.
+ */
+static int Get_Weapon_Indicator_Range(const BuildingClass* building)
+{
+    const WeaponSlotType slots[] = { WEAPON_SLOT_PRIMARY, WEAPON_SLOT_SECONDARY };
+    for (const auto slot : slots) {
+        const auto weapon = building->Get_Weapon(slot);
+        if (weapon && weapon->Weapon) {
+            const int range = building->Weapon_Range(slot);
+            if (range > 0) {
+                return range;
+            }
+        }
+    }
+
+    return 0;
+}
+
+
+static BuildingClass* Get_Local_Placement_Building()
+{
+    if (!PlayerPtr || !Map.PendingObjectPtr || !Map.PendingObject ||
+        Map.PendingObjectPtr->RTTI != RTTI_BUILDING || Map.PendingObject->RTTI != RTTI_BUILDINGTYPE) {
+        return nullptr;
+    }
+
+    const auto building = static_cast<BuildingClass*>(Map.PendingObjectPtr);
+    if (building->House != PlayerPtr || !building->Class || building->Class != Map.PendingObject) {
+        return nullptr;
+    }
+
+    return building;
+}
+
+
+/**
+ *  Separate selection loops in Tactical::Render and Draw_Radial_Indicators;
+ *  Render does not call the latter. ESI is the selected object at both sites.
+ *  Return 0 replays mov cl,[eax+0xD1] (6 bytes), preserving the native
+ *  HasRadialIndicator check and the subsequent cloak/sensor drawing.
+ */
+DEFINE_HOOK(0x00611B2A, _Tactical_Draw_Weapon_Range_Indicator_Patch, 6)
+{
+    GET(ObjectClass*, object, ESI);
+
+    if (!PlayerPtr || CurrentObjects.Count() != 1 || Get_Local_Placement_Building() ||
+        !object || object->RTTI != RTTI_BUILDING) {
+        return 0;
+    }
+
+    const auto building = static_cast<BuildingClass*>(object);
+    if (building->House == PlayerPtr && building->Class &&
+        (building->Class->IsBaseDefense || building->Class->UndeploysInto != nullptr)) {
+        Extension::Fetch(static_cast<TechnoClass*>(building))->Draw_Weapon_Range_Indicator(
+            Get_Weapon_Indicator_Range(building));
+    }
+
+    return 0;
+}
+DEFINE_HOOK_AGAIN(0x00617FCD, _Tactical_Draw_Weapon_Range_Indicator_Patch, 6)
+
+
+/**
+ *  Draw_Placement has checked the pending type and mouse bounds. Only its
+ *  foreground pass draws rings: drawtrans is at ESP+0x5C after 0x48 locals,
+ *  four saved registers and the return address. Return 0 replays the six-byte
+ *  mov ecx,[0x007494FC] and continues the native placement renderer.
+ */
+DEFINE_HOOK(0x00611E4D, _Tactical_Draw_Placement_Weapon_Range_Indicators_Patch, 6)
+{
+    GET_STACK(bool, drawtrans, 0x5C);
+
+    if (!drawtrans || Debug_Map) {
+        return 0;
+    }
+
+    const auto ghost = Get_Local_Placement_Building();
+    if (!ghost) {
+        return 0;
+    }
+
+    const int range = Get_Weapon_Indicator_Range(ghost);
+    const Cell cell = Map.ZoneCell + Map.ZoneOffset;
+    if (range <= 0 || !Map.In_Radar(cell)) {
+        return 0;
+    }
+
+    const auto placement_type = ghost->Class;
+    Coord center = cell.As_Coord();
+    center = placement_type->Coord_Fixup(&center);
+    // Match Center_Coord's foundation offset without moving the ghost.
+    center.X += (placement_type->Width() - 1) * (CELL_LEPTON_W / 2);
+    center.Y += (placement_type->Height() - 1) * (CELL_LEPTON_H / 2);
+    Extension::Fetch(static_cast<TechnoClass*>(ghost))->Draw_Weapon_Range_Indicator(range, &center);
+
+    for (int i = 0; i < Buildings.Count(); ++i) {
+        const auto building = Buildings[i];
+        if (!building || building == ghost || building->House != PlayerPtr || building->Class != placement_type) {
+            continue;
+        }
+        if (!building->IsActive || !building->IsDown || building->IsInLimbo ||
+            building->Strength <= 0 || building->CurrentMission == MISSION_DECONSTRUCTION) {
+            continue;
+        }
+
+        Extension::Fetch(static_cast<TechnoClass*>(building))->Draw_Weapon_Range_Indicator(
+            Get_Weapon_Indicator_Range(building));
+    }
+
+    return 0;
 }
 
 

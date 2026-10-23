@@ -14,6 +14,7 @@
 #include "anim.h"
 #include "buildingtype.h"
 #include "debughandler.h"
+#include "dsurface.h"
 #include "ebolt.h"
 #include "extension.h"
 #include "extension_globals.h"
@@ -38,6 +39,7 @@
 #include "wwcrc.h"
 
 #include <algorithm>
+#include <cmath>
 
 
 /**
@@ -446,6 +448,39 @@ int TechnoClassExtension::Get_Sight_Range() const
     }
 
     return sight_range;
+}
+
+
+/**
+ *  Draw a nominal weapon range in the owner's color, independently of selection.
+ */
+void TechnoClassExtension::Draw_Weapon_Range_Indicator(int range, const Coord* placement_center) const
+{
+    const auto techno = This_Const();
+    if (range <= 0 || !PlayerPtr || techno->House != PlayerPtr) {
+        return;
+    }
+
+    // Project a world-space circle, retaining fractional-cell weapon ranges.
+    const int radius = int(double(range) * CELL_PIXEL_W / (std::sqrt(2.0) * CELL_LEPTON_W));
+    if (radius <= 1) {
+        return;
+    }
+
+    const Coord coord = placement_center ? *placement_center : techno->Center_Coord();
+    Point2D center;
+    TacticalMap->Coord_To_Pixel(coord, center);
+    center += TacticalRect.TopLeft;
+
+    // An offscreen center can still have a visible part of its ellipse.
+    const Rect bounds(center - Point2D(radius, radius / 2), 2 * radius, radius);
+    if (!Intersect(bounds, TacticalRect).Is_Valid()) {
+        return;
+    }
+
+    const auto& color = techno->House->RemapColorRGB;
+    LogicalSurface->Draw_Ellipse(center, radius, radius / 2, TacticalRect,
+        DSurface::Build_Hicolor_Pixel(color.Get_Red(), color.Get_Green(), color.Get_Blue()));
 }
 
 

@@ -62,6 +62,7 @@ class TechnoClassExtension : public RadioClassExtension,
 
         bool Iron_Curtain_Me(bool forced);
         int Get_Sight_Range() const;
+        void Draw_Weapon_Range_Indicator(int range, const Coord* placement_center = nullptr) const;
 
     private:
         const TechnoTypeClass *Techno_Type_Class() const;
