@@ -505,19 +505,23 @@ finish_mission_process:
  *  #issue-593
  * 
  *  Implements IsCanPassiveAcquire for TechnoTypes when the unit is in MISSION_GUARD.
+ *  Runs before the native renovator exclusion, with this in ESI. Replaces
+ *  mov eax,[esi] and call [eax+0x2C4] (8 bytes); all exits continue explicitly.
  * 
  *  @author: CCHyper
  */
-DEFINE_HOOK(0x004A1AAE, _FootClass_Mission_Guard_Can_Passive_Acquire_Patch, 0)
+DEFINE_HOOK(0x004A1A98, _FootClass_Mission_Guard_Can_Passive_Acquire_Patch, 8)
 {
     GET(FootClass *, this_ptr, ESI);
 
     auto technoclassext = Extension::Fetch(this_ptr);
 
     /**
-     *  Can this unit passively acquire new targets?
+     *  Preserve the native existing-target guard and exclude non-healing renovators.
      */
-    if (!technoclassext->Can_Passive_Acquire()) {
+    if (this_ptr->TarCom != nullptr ||
+        (this_ptr->Is_Renovator() && (this_ptr->RTTI != RTTI_INFANTRY || this_ptr->Combat_Damage() >= 0)) ||
+        !technoclassext->Can_Passive_Acquire()) {
         goto continue_check;
     }
 
@@ -565,6 +569,23 @@ DEFINE_HOOK(0x004A2BE7, _FootClass_Mission_Guard_Area_Can_Passive_Acquire_Patch,
 
 tarcom_check:
     return 0x004A2C04;
+}
+
+
+/**
+ *  A healer engineer's Hunt target is a patient, not a capture order.
+ *  ESI holds this and EDI the infantry at this shared capture-branch entry.
+ *  Return 0 replays mov eax,[esi+0x11C] (6 bytes) for other infantry.
+ */
+DEFINE_HOOK(0x004A1C53, _FootClass_Mission_Hunt_Healer_Engineer_Patch, 6)
+{
+    GET(FootClass *, this_ptr, ESI);
+
+    if (this_ptr->RTTI == RTTI_INFANTRY && this_ptr->Is_Renovator() && this_ptr->Combat_Damage() < 0) {
+        return 0x004A1D1E;
+    }
+
+    return 0;
 }
 
 
@@ -881,6 +902,12 @@ DEFINE_HOOK(0x004A2C25, _FootClass_Do_MISSION_GUARD_AREA_Approach_Target_Patch, 
     GET(FootClass*, this_ptr, ESI);
 
     this_ptr->Assign_Destination(nullptr);
+
+    // A direct vehicle destination would trigger Per_Cell_Process's GuardArea capture path.
+    if (this_ptr->RTTI == RTTI_INFANTRY && this_ptr->Is_Renovator() && this_ptr->Combat_Damage() < 0) {
+        this_ptr->FootClass::Approach_Target();
+        return 0x004A2C2F;
+    }
 
     return 0;
 }

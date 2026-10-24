@@ -3060,7 +3060,8 @@ bool TechnoClassExt::_Should_Self_Heal_Now() const
  */
 bool TechnoClassExt::_Evaluate_Object(ThreatType method, int mask, int range, TechnoClass const* object, int& value, int zone, Coord const& coord) const
 {
-    bool engineer = Is_Renovator();
+    // Healer infantry use the existing patient filters instead of the engineer building restriction.
+    bool engineer = Is_Renovator() && (RTTI != RTTI_INFANTRY || Combat_Damage() >= 0);
 
     /*
     **  An object in limbo can never be a valid target.

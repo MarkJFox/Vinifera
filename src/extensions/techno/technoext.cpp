@@ -408,7 +408,8 @@ void TechnoClassExtension::Response_Harvest()
  */
 bool TechnoClassExtension::Can_Passive_Acquire() const
 {
-    if ((!This()->Is_Renovator() || !This()->House->Is_Human_Player()) && This()->Is_Weapon_Equipped()) {
+    if ((!This()->Is_Renovator() || !This()->House->Is_Human_Player() ||
+        (This()->RTTI == RTTI_INFANTRY && This()->Combat_Damage() < 0)) && This()->Is_Weapon_Equipped()) {
         /**
          *  IsCanPassiveAcquire defaults to true to copy original behaviour, so all units can passive acquire unless told otherwise.
          */
