@@ -19,6 +19,7 @@
 #include "asserthandler.h"
 #include "building.h"
 #include "extension.h"
+#include "fixedwing.h"
 #include "hooker.h"
 #include "house.h"
 #include "mouse.h"
@@ -75,7 +76,9 @@ bool AircraftClassExt::_Unlimbo(const Coord& coord, Dir256 dir)
      */
     if (!class_ext->IsMissileSpawn && !ext->SpawnOwner)
     {
-        if (IsALoaner || !Map.In_Local_Radar(coord)) {
+        if (FixedWing::Enabled(this) && coord.Z > Map.Get_Height_GL(coord)) {
+            adjusted_coord = coord;
+        } else if (IsALoaner || !Map.In_Local_Radar(coord)) {
             adjusted_coord.Z = Class->Flight_Level() + Map.Get_Height_GL(coord);
         } else {
             adjusted_coord.Z = Map.Get_Height_GL(coord);
@@ -85,7 +88,7 @@ bool AircraftClassExt::_Unlimbo(const Coord& coord, Dir256 dir)
     if (FootClass::Unlimbo(adjusted_coord, dir)) {
 
         const auto weapon = Class->Fetch_Weapon_Info(WEAPON_SLOT_PRIMARY).Weapon;
-        if (!class_ext->IsSpawned && (!Class->IsSelectable || !Class->IsLandable || (weapon && weapon->IsCamera))) {
+        if (!class_ext->IsSpawned && (!Class->IsSelectable || (!Class->IsLandable && !FixedWing::Enabled(this)) || (weapon && weapon->IsCamera))) {
             IsALoaner = true;
         }
 
@@ -120,6 +123,8 @@ bool AircraftClassExt::_Unlimbo(const Coord& coord, Dir256 dir)
         else {
             Set_Speed(0.0);
         }
+
+        if (FixedWing::Enabled(this)) FixedWing::Initialize_Spawn(this);
 
         return true;
     }
@@ -313,6 +318,33 @@ ActionType AircraftClassExt::_What_Action(ObjectClass const* target, bool disall
 RadioMessageType AircraftClassExt::_Receive_Message(RadioClass* from, RadioMessageType message, long& param)
 {
     AbstractClass* target;
+
+    if (FixedWing::Enabled(this) && FixedWing::Controlled(FixedWing::Locomotor(this))) {
+        if (message == RADIO_RUN_AWAY) {
+            TechnoClass::Receive_Message(from, message, param);
+            if (In_Radio_Contact()) Transmit_Message(RADIO_OVER_OUT);
+            if (HeightAGL > 0) FixedWing::Request_Return(this);
+            else {
+                // Evacuation is an actual flight order, not routine maintenance.
+                Assign_Mission(MISSION_ENTER);
+                field_370 = true;
+                Commence();
+            }
+            return RADIO_ROGER;
+        }
+        if (message == RADIO_MOVE_HERE) {
+            // Only our mutually reserved dock may maintain an existing approach.
+            // Never Commence here: it resets the approach Status to INITIAL.
+            target = reinterpret_cast<AbstractClass*>(param);
+            if (from == Radio && target == Radio && from->Radio == this
+                && target->Fetch_RTTI() == RTTI_BUILDING
+                && FixedWing::Dock_Candidate(this, static_cast<BuildingClass*>(target))) {
+                TechnoClass::Receive_Message(from, message, param);
+                return RADIO_ROGER;
+            }
+            return RADIO_NEGATIVE;
+        }
+    }
 
     switch (message) {
 
@@ -836,6 +868,13 @@ DEFINE_HOOK(0x0040B78E, _AircraftClass_Assign_Mission_QMove_Patch, 8)
 DEFINE_HOOK(0x0040B35A, _AircraftClass_Enter_Idle_Mode_QMove_Patch, 6)
 {
     GET(AircraftClass*, this_ptr, ESI);
+
+    FixedWing::Native_Attack_Idle(this_ptr);
+    if (FixedWing::Enabled(this_ptr) && !FixedWing::Native_Attack(this_ptr)
+        && FixedWing::Controlled(FixedWing::Locomotor(this_ptr))) {
+        FixedWing::Idle(this_ptr);
+        return 0x0040B340;
+    }
 
     this_ptr->Handle_Navigation_List();
     if (this_ptr->NavCom != nullptr) {

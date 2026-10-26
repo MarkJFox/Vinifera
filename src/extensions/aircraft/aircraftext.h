@@ -16,6 +16,10 @@
 class AircraftClass;
 class HouseClass;
 
+enum class FixedWingCAPMode { None, Static, Escort };
+// Existing values/layout remain stable. NativeEnding records a native Idle
+// decision until the mission has actually changed; it owns no movement itself.
+enum class FixedWingAttackControl { Custom, NativePending, NativeTakeoff, Native, NativeEnding };
 
 class DECLSPEC_UUID(UUID_AIRCRAFT_EXTENSION)
 AircraftClassExtension final : public FootClassExtension
@@ -39,11 +43,24 @@ AircraftClassExtension final : public FootClassExtension
 
         virtual int Get_Object_Size() const override;
         virtual void Object_CRC(CRCEngine &crc) const override;
+        using FootClassExtension::On_Detach;
+        void On_Detach(TechnoClass *target, bool all) override;
 
         virtual AircraftClass *This() const override { return reinterpret_cast<AircraftClass *>(FootClassExtension::This()); }
         virtual const AircraftClass *This_Const() const override { return reinterpret_cast<const AircraftClass *>(FootClassExtension::This_Const()); }
         virtual RTTIType Fetch_RTTI() const override { return RTTI_AIRCRAFT; }
 
     public:
+        // 0 = no emergency; positive = remaining simulation ticks (AF-0004G).
+        int FixedWingNoDockTimer;
 
+        // The parent Guard order must survive Attack, Enter and dock Sleep.
+        FixedWingCAPMode CAPMode;
+        MissionType CAPMission;
+        Coord CAPAnchor;
+        TechnoClass *CAPEscort;
+        bool CAPRearming;
+        int CAPOwner;
+
+        FixedWingAttackControl AttackControl;
 };

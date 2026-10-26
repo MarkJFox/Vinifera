@@ -14,6 +14,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0004H6A adds saved manual/native FixedWing attack ownership and raises the save basis to `0x150000`. Start a new game; earlier saves, including H5B, are rejected. See [AF-0004H6A](AF-0004H6A.md).
+- Aftermath AF-0004H adds persistent FixedWing Guard/CAP context and raises the save basis from `0x130000` to `0x140000`. Start a new game; AF-0004G/G2 and older saves are rejected. See [AF-0004H](AF-0004H.md).
+- Aftermath AF-0004G adds a persistent FixedWing no-dock survival timer and raises the save basis to `0x130000`. Start a new game; older saves, including AF-0004E saves, are rejected. See [AF-0004G implementation and manual checks](AF-0004G.md).
+- Aftermath AF-0004E extends AircraftType `FixedWing=yes` (default `no`) with attack runs. Its changed Attack Status and Fly coordinate meanings require a new game: older saves, including AF-0004C/D saves, are rejected globally. See [AF-0004E implementation and manual checks](AF-0004E.md).
 - Saved games are not compatible between Vinifera versions. Saves created with 0.1.0.0 will not load in 1.0.0.0.
 - Vinifera now includes its own multiplayer spawner, which supersedes the ts-patches spawner. See the [spawner section](Miscellaneous.md#spawner) for how it is configured through `SPAWN.INI`.
 - Campaign difficulty is no longer applied to AI houses from `SUN.INI` when reading a campaign scenario. Both human and AI difficulty now come from the settings the campaign run was started with.
@@ -52,6 +56,66 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0004H6C
+
+- FixedWing CAP and escort holding patterns use a wider four-leg circuit: the preferred box grows from 12 x 8 to 24 x 16 cells, giving aircraft more room to turn around their anchor or escorted unit. Shared dock-search holding uses the same geometry. Existing boundary fallbacks, native attacks, target acquisition and save basis `0x150000` remain unchanged. See [AF-0004H6C](AF-0004H6C.md).
+
+### Aftermath AF-0004H6B
+
+- FixedWing aircraft use the native Tiberian Sun Aircraft attack mission and Fly locomotion for manual, CAP, Escort, AI and script attacks. Remove the custom ingress/pass/egress/regroup/turnback planner. FixedWing retains takeoff, landing, docking and CAP/Escort; completed CAP attacks resume their valid parent with ammunition remaining, or return for existing service/reload. Holding dimensions and save basis `0x150000` remain unchanged. No build or tests; see [AF-0004H6B](AF-0004H6B.md).
+
+### Aftermath AF-0004H6A (experiment)
+
+- Explicit manual FixedWing object attacks bypass the custom attack planner after FixedWing takeoff and use the native Tiberian Sun Aircraft attack mission and Fly process. CAP autoattacks keep their existing controller; landing/docking remain FixedWing. This experiment tests whether native strafing, turns and repeated passes can replace the custom attack controller. No build or tests; see [AF-0004H6A](AF-0004H6A.md).
+
+### Aftermath AF-0004H5B (experimental)
+
+- FixedWing CAP autoattacks try a bounded, unarmed target turnback when both normal regroup routes fail after completed egress. Retain the current target and resume the existing ingress/pass checks when fresh geometry is safe; failed retries resume CAP with delayed reacquisition. Normal regroup, H4 flight bounds, H5A command transport, holding dimensions and save basis `0x140000` remain unchanged. No build or tests; see [AF-0004H5B](AF-0004H5B.md).
+
+### Aftermath AF-0004H5A (experimental)
+
+- FixedWing Guard Area escort clicks preserve the clicked own Techno through the synchronized mission event instead of treating the object as a cell. Correct the two existing click-hook entry assignments; retain static CAP, Escort behavior and save basis `0x140000`. No build or tests; see [AF-0004H5A](AF-0004H5A.md).
+
+### Aftermath AF-0004H4 (experimental)
+
+- FixedWing attack ingress, egress and regroup may use the outer TS `In_Radar` playfield beyond `In_Local_Radar`. Retain H3 egress shortening only at that outer boundary and the existing array guard; restore the native movement-edge correction for attack turns. Use the selected weapon's range without a one-cell geometry floor. Keep dock/CAP-holding rules and save basis `0x140000`; no build or tests. See [AF-0004H4](AF-0004H4.md).
+
+### Aftermath AF-0004H3 (experimental)
+
+- FixedWing CAP attack passes retain the standard egress when valid and can shorten it along the same attack axis near map boundaries, with a speed/ROT-based minimum. Only the immediate pass must fit; regroup is still planned after egress. Keep H2 traces, distinguish pass/continuation validity and report adjusted/unavailable exits. No new fields, hooks or save basis change (`0x140000`); no build or tests. See [AF-0004H3](AF-0004H3.md).
+
+### Aftermath AF-0004H2 (diagnostics)
+
+- Add developer-only `[FWCAP]` command/escort lifetime, CAP geometry and automatic attack-run traces, including actual ingress/pass/egress/regroup transitions, alignment rejection, counter-ingress observations and read-only A/B map probes. Gameplay, `[FWDOCK]`, extension layout and save basis `0x140000` are unchanged. No build or tests; see [AF-0004H2](AF-0004H2.md).
+
+### Aftermath AF-0004H1 (experimental)
+
+- Require existing explicit CAP context before executing FixedWing Guard/GuardArea as CAP. Native production/idle Guard no longer creates CAP or requests CAP takeoff. G and own-object Escort still enter through the synchronized command event; plain AI/script mission assignments cannot create CAP. Save basis remains `0x140000`; no build or tests. See [AF-0004H1](AF-0004H1.md).
+
+### Aftermath AF-0004H (experimental)
+
+- Supported FixedWing aircraft use the existing Guard/GuardArea commands for static or own-object Escort CAP. Reuse holding corners, native threat acquisition and AF-0004E attack runs; retain CAP across automatic attacks and full dock reloads. Explicit Move/Attack/Stop replace CAP. No new INI keys or locomotor; no build or tests. See [AF-0004H](AF-0004H.md).
+
+### Aftermath AF-0004G2 (experimental)
+
+- FixedWing dock approaches retain the preferred landing direction and try exactly its opposite only when the complete preferred approach is invalid. All flight phases and final facing use the same central choice, with unchanged approach lengths and save basis `0x130000`. Keep G1 traces and correct their ambiguous CAN_LOAD outcome label. No build or tests; see [AF-0004G2](AF-0004G2.md).
+
+### Aftermath AF-0004G1 (diagnostics)
+
+- Add development-only FixedWing dock-reacquisition traces for presence, actual native search stages, radio replies, occupancy, construction and approach rejection, plus missing STACK searches. No gameplay fix or persistent state change; no build or tests. See [AF-0004G1](AF-0004G1.md).
+
+### Aftermath AF-0004G (experimental)
+
+- Supported FixedWing aircraft receive 2700 simulation ticks (three game minutes) when no completed compatible own dock exists. Occupied/reserved docks count as present; a rebuilt dock resets the emergency without overriding orders. Expiration invokes native aircraft crash/death handling. The per-aircraft counter is saved and included in CRC. No new INI option; no build or tests were run. See [AF-0004G](AF-0004G.md).
+
+### Aftermath AF-0004E (experimental)
+
+- Add ingress, a committed firing pass, straight egress and lateral regroup for ordinary FixedWing aircraft. Reuse weapon selection, Can_Fire, Fire_At and the AF-0004C/D return/service path. Attack speed stays normal; Speed and ROT determine turning space. No new instance fields or INI keys. This increment has not been built or tested; see [AF-0004E](AF-0004E.md).
+
+### Aftermath AF-0004C (experimental)
+
+- Retain AF-0004A AircraftType `FixedWing` parsing, persistence and CRC coverage, and implement forward takeoff/climb, Move fly-by completion, return/dock reservation, deterministic holding, directed approach/descent, native touchdown and existing service/reload handoff. No new Aircraft instance fields or locomotor are added. Combat and special aircraft combinations remain outside this PoC. The implementation has not been built or runtime-tested. See [AF-0004C](AF-0004C.md).
 
 ### 1.0.0.2
 

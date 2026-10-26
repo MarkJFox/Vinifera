@@ -59,4 +59,7 @@ AircraftTypeClassExtension final : public TechnoTypeClassExtension
          *  This is the rate that this aircraft will reload its ammo when docked with a helipad.
          */
         std::optional<double> ReloadRate;
+
+        /** Opt into the ordinary-aircraft fixed-wing flight controller. */
+        bool IsFixedWing;
 };

@@ -12,10 +12,12 @@
 #include "commandext_hooks.h"
 
 #include "asserthandler.h"
+#include "aircraft.h"
 #include "building.h"
 #include "ccini.h"
 #include "commandext.h"
 #include "debughandler.h"
+#include "fixedwing.h"
 #include "hooker.h"
 #include "house.h"
 #include "mouse.h"
@@ -243,7 +245,8 @@ DEFINE_HOOK(0x004E95C2, _GuardCommandClass_Process_Harvesters_Set_Mission_Patch,
          *  
          *  Any unit that has a weapon, assign the enter guard area mission.
          */
-        if (techno->Can_Player_Fire()) {
+        if (techno->Can_Player_Fire()
+            || (techno->RTTI == RTTI_AIRCRAFT && FixedWing::Enabled(static_cast<AircraftClass*>(techno)))) {
             techno->Player_Assign_Mission(MISSION_GUARD_AREA, techno->Get_Target_Cell_Ptr());
             AllowVoice = false;
         }

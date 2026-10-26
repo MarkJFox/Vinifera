@@ -11,6 +11,7 @@
 
 #include "eventext_hooks.h"
 
+#include "aircraft.h"
 #include "connmgr.h"
 #include "debughandler.h"
 #include "desyncdialog.h"
@@ -18,6 +19,7 @@
 #include "eventext.h"
 #include "extension.h"
 #include "extension_globals.h"
+#include "fixedwing.h"
 #include "hooker.h"
 #include "house.h"
 #include "ipxmgr.h"
@@ -946,6 +948,15 @@ DEFINE_HOOK(0x004948A5, _EventClass_Execute_QMove_Aircraft_Patch, 6)
 {
     GET(int, mission, EAX);
     GET(FootClass*, this_ptr, EDI);
+
+    if (this_ptr->Fetch_RTTI() == RTTI_AIRCRAFT) {
+        // Accepted synchronized commands replace a FixedWing CAP parent order.
+        // Native automatic attacks never pass through this event hook.
+        GET(EventClass*, event, ESI);
+        FixedWing::Trace_CAP_Command(static_cast<AircraftClass*>(this_ptr), static_cast<MissionType>(mission), event);
+        FixedWing::Command(static_cast<AircraftClass*>(this_ptr), static_cast<MissionType>(mission),
+            event->Data.MegaMission.Target.As_Abstract());
+    }
 
     if (mission == MISSION_QMOVE && this_ptr->Fetch_RTTI() == RTTI_AIRCRAFT) {
         this_ptr->Assign_Target(nullptr);

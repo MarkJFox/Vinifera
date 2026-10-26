@@ -13,10 +13,13 @@
 
 #include "aircrafttype.h"
 #include "ccini.h"
+#include "debughandler.h"
 #include "extension.h"
+#include "fixedwing.h"
 #include "rules.h"
 #include "tibsun_globals.h"
 #include "vinifera_saveload.h"
+#include "wwcrc.h"
 
 
 /**
@@ -27,7 +30,8 @@
 AircraftTypeClassExtension::AircraftTypeClassExtension(const AircraftTypeClass *this_ptr) :
     TechnoTypeClassExtension(this_ptr),
     IsCurleyShuffle(std::nullopt),
-    ReloadRate(std::nullopt)
+    ReloadRate(std::nullopt),
+    IsFixedWing(false)
 {
     AircraftTypeExtensions.Add(this);
 }
@@ -43,6 +47,7 @@ AircraftTypeClassExtension::AircraftTypeClassExtension(const NoInitClass &noinit
     IsCurleyShuffle(std::nullopt),
     ReloadRate(std::nullopt)
 {
+    // Leave IsFixedWing untouched: the base Load has restored its raw data.
 }
 
 
@@ -134,6 +139,7 @@ int AircraftTypeClassExtension::Get_Object_Size() const
  */
 void AircraftTypeClassExtension::Object_CRC(CRCEngine &crc) const
 {
+    crc(IsFixedWing);
 }
 
 
@@ -152,6 +158,11 @@ bool AircraftTypeClassExtension::Read_INI(CCINIClass &ini)
 
     if (!ini.Is_Present(ini_name)) {
         return false;
+    }
+
+    IsFixedWing = ini.Get_Bool(ini_name, "FixedWing", IsFixedWing);
+    if (IsFixedWing && !FixedWing::Supported_Type(This())) {
+        DEBUG_WARNING("AircraftType \"{}\": unsupported FixedWing combination (Carryall, Dropship, Hunter-Seeker, passengers, spawned aircraft, non-Fly locomotor or nonpositive FlightLevel/Speed/ROT).\n", ini_name);
     }
 
     if (ini.Is_Present(ini_name, "CurleyShuffle")) {

@@ -13,6 +13,7 @@
 
 #include "aircrafttracker.h"
 #include "extension.h"
+#include "fixedwing.h"
 #include "flylocomotion.h"
 #include "footext.h"
 #include "hooker.h"
@@ -56,6 +57,12 @@ void FlyLocomotionClassExt::_Take_Off()
 
         if (LinkedTo->HeightAGL == 0) {
             LinkedTo->PrimaryFacing.Set(LinkedTo->SecondaryFacing.Desired());
+        }
+
+        if (FixedWing::Controlled(this)) {
+            IsMoving = true;
+            CurrentSpeed = std::max(0.25, CurrentSpeed);
+            TargetSpeed = 1.0;
         }
 
         Static_Sound(LinkedTo->TClass->AuxSound1, LinkedTo->PositionCoord);

@@ -256,6 +256,10 @@ GlobDirectories(GLOB_RECURSE VINIFERA_INCLUDE_DIRS ${PROJECT_SOURCE_DIR})
 GlobHeaders(GLOB_RECURSE VINIFERA_HEADERS ${PROJECT_SOURCE_DIR})
 GlobSources(GLOB_RECURSE VINIFERA_SOURCES ${PROJECT_SOURCE_DIR})
 
+# Keep the FixedWing implementation explicitly registered in the target sources.
+list(APPEND VINIFERA_SOURCES "${PROJECT_SOURCE_DIR}/extensions/aircraft/fixedwing.cpp")
+list(REMOVE_DUPLICATES VINIFERA_SOURCES)
+
 message(STATUS "Pulling in Hooker sources.")
 set(HOOKER_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/hooker")
 GlobHeaders(GLOB HOOKER_HEADERS ${HOOKER_INCLUDE_DIR})

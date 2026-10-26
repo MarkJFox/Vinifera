@@ -25,6 +25,7 @@
 #include "extension.h"
 #include "fatal.h"
 #include "fetchres.h"
+#include "fixedwing.h"
 #include "hooker.h"
 #include "house.h"
 #include "houseext.h"
@@ -3707,6 +3708,9 @@ DEFINE_HOOK(0x00637F0B, _TechnoClass_Find_Docking_Bay_Unoccupied_Aircraft_Patch,
 
     if (this_ptr->Fetch_RTTI() == RTTI_AIRCRAFT) {
         only_unoccupied_ptr = true;
+        auto aircraft = static_cast<AircraftClass*>(this_ptr);
+        GET(BuildingClass*, candidate, EDI);
+        if (FixedWing::Enabled(aircraft) && !FixedWing::Dock_Candidate(aircraft, candidate)) return 0x00638013;
     }
 
     return 0;

@@ -11,8 +11,11 @@
 
 #include "eventext.h"
 
+#include "aircraft.h"
+#include "aircraftext.h"
 #include "debughandler.h"
 #include "extension.h"
+#include "fixedwing.h"
 #include "houseext.h"
 #include "mouse.h"
 #include "protocolzero.h"
@@ -380,6 +383,21 @@ void EventClassExt::Execute()
 void EventClassExt::Do_IDLE()
 {
     TechnoClass* techno = Data.Target.Whom.As_Techno();
+
+    if (techno && techno->IsActive && !techno->IsInLimbo && techno->RTTI == RTTI_AIRCRAFT) {
+        auto aircraft = static_cast<AircraftClass*>(techno);
+        if (FixedWing::Enabled(aircraft) && Extension::Fetch(aircraft)->CAPMode != FixedWingCAPMode::None) {
+            // Stop must also cancel a pending CAP resume on a tethered dock.
+            FixedWing::Cancel_CAP(aircraft);
+            aircraft->MissionQueue = MISSION_NONE;
+            aircraft->Clear_Navigation_List();
+            aircraft->CurrentPath = -1;
+            aircraft->NextWaypoint = 0;
+            if (aircraft->HeightAGL > 0) FixedWing::Request_Return(aircraft);
+            else aircraft->Assign_Mission(MISSION_SLEEP);
+            aircraft->Commence();
+        }
+    }
 
     if (techno != nullptr && techno->IsActive && !techno->IsInLimbo && !techno->IsTethered) {
         if (techno->Mission == MISSION_CONSTRUCTION || techno->Mission == MISSION_DECONSTRUCTION) {

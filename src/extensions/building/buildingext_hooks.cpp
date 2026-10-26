@@ -12,6 +12,7 @@
 #include "buildingext_hooks.h"
 
 #include "aircraft.h"
+#include "aircraftext.h"
 #include "aircrafttype.h"
 #include "aircrafttypeext.h"
 #include "anim.h"
@@ -32,6 +33,7 @@
 #include "event.h"
 #include "extension.h"
 #include "factory.h"
+#include "fixedwing.h"
 #include "hooker.h"
 #include "house.h"
 #include "houseext.h"
@@ -1149,6 +1151,21 @@ DEFINE_HOOK(0x004325FE, _BuildingClass_Mission_Repair_ReloadRate_Patch_During, 0
  */
 bool _BuildingClass_Mission_Repair_Assign_Unit_Destination(BuildingClass *building, TechnoClass *techno, bool clear_archive)
 {
+    // The facility has completed service. A retained CAP replaces only its
+    // internal ground exit/rally Move; explicit player Move already canceled CAP.
+    if (techno->RTTI == RTTI_AIRCRAFT) {
+        auto aircraft = static_cast<AircraftClass*>(techno);
+        const auto ext = Extension::Fetch(aircraft);
+        if (FixedWing::Enabled(aircraft) && ext->CAPMode != FixedWingCAPMode::None && ext->CAPRearming) {
+            // Retain service contact while unpowered/EMP-disabled or not yet
+            // fully reloaded; the existing facility retry/Power_On path owns it.
+            if (!FixedWing::Resume_After_Service(aircraft)) return false;
+            if (clear_archive) techno->ArchiveTarget = nullptr;
+            building->Transmit_Message(RADIO_OVER_OUT);
+            techno->field_20C = nullptr;
+            return true;
+        }
+    }
     AbstractClass * target = nullptr;
 
     if (building->ArchiveTarget != nullptr) {
