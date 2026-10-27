@@ -44,6 +44,21 @@ public:
 
     void Fetch_Building_Normal_Image(TheaterType theater);
 
+    // AF-0005B: one immutable, type-owned mask for both Occupy_List modes.
+    static constexpr int CustomFoundationStorageSize = 120;
+    static constexpr int CustomFoundationMaxCells = 31;
+
+    void Finalize_Custom_Foundation();
+    bool Custom_Foundation_In_Radar(const Cell& origin) const;
+    static unsigned Custom_Foundation_Sync_CRC(unsigned native_crc);
+
+private:
+    void Read_Custom_Foundation();
+    void Reset_Custom_Foundation();
+    void Reject_Custom_Foundation(const char* reason);
+    bool Validate_Custom_Foundation_Cells() const;
+    void Custom_Foundation_CRC(CRCEngine& crc) const;
+
 public:
     /**
      *  This is the sound effect to play when the animation of the gate is rising.
@@ -123,4 +138,12 @@ public:
      *  If this is a gate, should it always be drawn normally, as opposed to being drawn on the ground when open?
      */
     bool IsBarGate;
+
+    // No default member initializers: NoInit must preserve the loaded blob.
+    bool IsCustomFoundationEnabled;
+    bool IsCustomFoundationValid;
+    int FoundationWidth;
+    int FoundationHeight;
+    int FoundationCellCount;
+    Cell CustomFoundationCells[CustomFoundationStorageSize];
 };

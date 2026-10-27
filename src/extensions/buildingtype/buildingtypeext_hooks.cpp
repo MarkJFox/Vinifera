@@ -12,6 +12,7 @@
 #include "buildingtypeext_hooks.h"
 
 #include "asserthandler.h"
+#include "building.h"
 #include "buildingtype.h"
 #include "buildingtypeext.h"
 #include "buildingtypeext_init.h"
@@ -23,7 +24,66 @@
 #include "syringe.h"
 #include "tibsun_globals.h"
 #include "verses.h"
+#include "vinifera_globals.h"
 #include "weapontype.h"
+
+/**
+ *  AF-0005B: preserve __thiscall and the original native fallback. The first
+ *  ten bytes are push ecx / push esi / mov esi,ecx / mov cl,[native flag].
+ *  The custom path has not executed that prologue, so jump straight to ret 4.
+ */
+DEFINE_HOOK(0x0043FED0, _BuildingTypeClass_Occupy_List_Custom_Foundation, 0xA)
+{
+    // Native objects load before extension pointers are remapped. Cell occupation
+    // is restored from the save; do not dereference a serialized extension pointer.
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        R->EAX(ext->CustomFoundationCells);
+        return 0x0043FF20;
+    }
+    return 0;
+}
+
+/**
+ *  Reject invalid absolute cells before native Legal_Placement indexes Map.
+ *  No placement algorithm is replaced; native types execute the original code.
+ */
+DEFINE_HOOK(0x00442EA0, _BuildingTypeClass_Legal_Placement_Custom_Foundation_Bounds, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    GET_STACK(const Cell*, position, 0x4);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid &&
+        (position == nullptr || !ext->Custom_Foundation_In_Radar(*position))) {
+        R->EAX(0);
+        return 0x00442EBE; // ret 8; no native prologue/arguments have been changed.
+    }
+    return 0;
+}
+
+/**
+ *  MARK_DOWN_FORCED bypasses Can_Enter_Cell/Legal_Placement. Guard it and
+ *  ordinary Mark-down before the parent changes occupation or IsDown.
+ *  The overwritten instruction is only sub esp,90h (six bytes).
+ */
+DEFINE_HOOK(0x00429370, _BuildingClass_Mark_Custom_Foundation_Bounds, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    GET_STACK(MarkType, mark, 0x4);
+    if (mark == MARK_DOWN || mark == MARK_DOWN_FORCED) {
+        const auto ext = Extension::Fetch(building->Class);
+        if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid &&
+            !ext->Custom_Foundation_In_Radar(building->Get_Cell())) {
+            R->EAX(0);
+            return 0x0042978D; // Only ret 4, not the native frame-unwinding epilogue.
+        }
+    }
+    return 0;
+}
 
 /**
  *  A fake class for implementing new member functions which allow

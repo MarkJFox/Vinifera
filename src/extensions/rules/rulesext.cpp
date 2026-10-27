@@ -673,6 +673,11 @@ bool RulesClassExtension::Objects(CCINIClass &ini)
         ::PrerequisiteGroups[index]->Read_INI(ini);
     }
 
+    // Dock/DeploysInto references are complete only after all TechnoTypes.
+    for (int index = 0; index < BuildingTypeExtensions.Count(); ++index) {
+        BuildingTypeExtensions[index]->Finalize_Custom_Foundation();
+    }
+
     return true;
 }
 

@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005B adds saved BuildingType custom foundation masks and raises the save basis to `0x160000`. Earlier saves are rejected; start a new game. See [AF-0005B](AF-0005B.md).
 - Aftermath AF-0004H6A adds saved manual/native FixedWing attack ownership and raises the save basis to `0x150000`. Start a new game; earlier saves, including H5B, are rejected. See [AF-0004H6A](AF-0004H6A.md).
 - Aftermath AF-0004H adds persistent FixedWing Guard/CAP context and raises the save basis from `0x130000` to `0x140000`. Start a new game; AF-0004G/G2 and older saves are rejected. See [AF-0004H](AF-0004H.md).
 - Aftermath AF-0004G adds a persistent FixedWing no-dock survival timer and raises the save basis to `0x130000`. Start a new game; older saves, including AF-0004E saves, are rejected. See [AF-0004G implementation and manual checks](AF-0004G.md).
@@ -56,6 +57,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0005B
+
+- Add limited, opt-in custom occupied masks inside native `Foundation=3x3` for ordinary static buildings. Type-owned 120-Cell storage feeds native placement and occupation; dimensions, radar, shroud and adjacency keep native bounding semantics. Special service/factory/deploy types are rejected. Canonical masks persist in saves and participate in the existing FRAMESYNC configuration comparison. No build or tests have been run; see [AF-0005B](AF-0005B.md).
 
 ### Aftermath AF-0004H6C
 

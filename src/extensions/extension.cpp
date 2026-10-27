@@ -2016,9 +2016,9 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0004H6A adds saved manual/native attack ownership.
-    // Reject older Aircraft extension layouts globally.
-    unsigned version = 0x150000;
+    // AF-0005B adds the saved BuildingType custom foundation configuration.
+    // Reject older extension layouts globally, following the 0x10000 basis steps.
+    unsigned version = 0x160000;
 
     /**
      *  For debug builds, offset the save file version.
