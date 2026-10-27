@@ -235,11 +235,7 @@ namespace
 
         bool Enabled()
         {
-#ifndef NDEBUG
-            return true;
-#else
             return Vinifera_DeveloperMode;
-#endif
         }
 
         void Reset_If_Needed()
@@ -605,12 +601,8 @@ namespace
         bool Enabled()
         {
             if (Vinifera_PerformingLoad) { Watches.clear(); return false; }
-#ifndef NDEBUG
-            return true;
-#else
             if (!Vinifera_DeveloperMode) Watches.clear();
             return Vinifera_DeveloperMode;
-#endif
         }
 
         Watch& Get(AircraftClass* a)
@@ -1446,13 +1438,17 @@ bool No_Dock_AI(AircraftClass* a)
                 DockDiagnostics::Inventory(a, "NO_DOCK_PRESENCE_RESTORED");
             }
             ext->FixedWingNoDockTimer = 0;
-            DEV_DEBUG_INFO("FixedWing {}: compatible dock restored; no-dock timer reset.\n", a->Fetch_Heap_ID());
+            if (Vinifera_DeveloperMode) {
+                DEV_DEBUG_INFO("FixedWing {}: compatible dock restored; no-dock timer reset.\n", a->Fetch_Heap_ID());
+            }
         }
         return false;
     }
     if (ext->FixedWingNoDockTimer == 0) {
         ext->FixedWingNoDockTimer = NO_DOCK_GRACE;
-        DEV_DEBUG_INFO("FixedWing {}: no-dock timer started ({} ticks).\n", a->Fetch_Heap_ID(), NO_DOCK_GRACE);
+        if (Vinifera_DeveloperMode) {
+            DEV_DEBUG_INFO("FixedWing {}: no-dock timer started ({} ticks).\n", a->Fetch_Heap_ID(), NO_DOCK_GRACE);
+        }
         return false;
     }
     if (ext->FixedWingNoDockTimer > 1) {
@@ -1465,7 +1461,9 @@ bool No_Dock_AI(AircraftClass* a)
     // triggers, radio release, Stun and tumbling; do not touch a after it returns.
     if (a->HeightAGL > 0) {
         a->On_Death(nullptr);
-        DEV_DEBUG_INFO("FixedWing {}: no-dock timer expired; native aircraft crash.\n", id);
+        if (Vinifera_DeveloperMode) {
+            DEV_DEBUG_INFO("FixedWing {}: no-dock timer expired; native aircraft crash.\n", id);
+        }
         return true;
     }
     // On_Death cannot crash a grounded aircraft. Use its normal damage/death
@@ -1473,7 +1471,9 @@ bool No_Dock_AI(AircraftClass* a)
     int damage = a->Strength;
     const auto result = a->Take_Damage(damage, 0, Rule->C4Warhead, nullptr, true, false);
     if (result == RESULT_DESTROYED || result == RESULT_ALREADY_DESTROYED) {
-        DEV_DEBUG_INFO("FixedWing {}: no-dock timer expired; native ground death.\n", id);
+        if (Vinifera_DeveloperMode) {
+            DEV_DEBUG_INFO("FixedWing {}: no-dock timer expired; native ground death.\n", id);
+        }
         return true;
     }
     // Native damage protection may refuse ground damage. Keep expiry pending,
