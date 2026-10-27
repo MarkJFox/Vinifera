@@ -20,12 +20,95 @@
 #include "debughandler.h"
 #include "extension.h"
 #include "hooker.h"
+#include "radar.h"
 #include "rules.h"
 #include "syringe.h"
 #include "tibsun_globals.h"
 #include "verses.h"
 #include "vinifera_globals.h"
 #include "weapontype.h"
+
+/**
+ *  AF-0005C. These entry hooks have not executed any native prologue.
+ *  Inactive types replay the displaced instructions and stay fully native.
+ */
+DEFINE_HOOK(0x0043FF40, _BuildingTypeClass_Width_Custom_Foundation, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        R->EAX(ext->FoundationWidth);
+        return 0x0043FF4D; // ret
+    }
+    return 0;
+}
+
+DEFINE_HOOK(0x0043FF50, _BuildingTypeClass_Height_Custom_Foundation, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        R->EAX(ext->FoundationHeight);
+        return 0x0043FF8A; // ret 4; custom types cannot have a bib.
+    }
+    return 0;
+}
+
+DEFINE_HOOK(0x0043FF90, _BuildingTypeClass_Max_Pips_Custom_Foundation, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        R->EAX(ext->FoundationWidth);
+        // Skip only Size and SizeWidth; retain the complete native multiply,
+        // signed divide by 8, PipScale branches and TechnoType fallback.
+        return 0x0043FF9D;
+    }
+    return 0;
+}
+
+DEFINE_HOOK(0x00442ED0, _BuildingTypeClass_Lepton_Dimensions_Custom_Foundation, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, ECX);
+    GET_STACK(Point3D*, dimensions, 0x4); // Hidden structure-return buffer.
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        *dimensions = Point3D(ext->FoundationWidth * CELL_LEPTON_W,
+            ext->FoundationHeight * CELL_LEPTON_H, type->ZHeight * 200);
+        R->EAX(dimensions);
+        return 0x00442F0E; // Only ret 4; the native push esi/edi never executed.
+    }
+    return 0;
+}
+
+static_assert(sizeof(DynamicVectorClass<Point2D>) == 0x18, "TS radar foundation vector ABI changed");
+
+DEFINE_HOOK(0x005BB8C0, _RadarClass_Get_Foundation_Custom_Foundation, 0xA)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(RadarClass*, radar, ECX);
+    GET_STACK(BuildingTypeClass*, type, 0x4);
+    const auto ext = Extension::Fetch(type);
+    if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+        const auto shape = ext->Custom_Foundation_Radar(*radar);
+        if (shape != nullptr) {
+            R->EAX(shape);
+            return 0x005BB8D4; // ret 4; EAX points to the vector, not its data.
+        }
+    }
+    return 0;
+}
+
+DEFINE_HOOK(0x005BB8B3, _RadarClass_Compute_Foundations_Custom_Foundation, 7)
+{
+    GET_STACK(RadarClass*, radar, 0x10); // this saved by the native prologue.
+    BuildingTypeClassExtension::Rebuild_Custom_Foundation_Radar(*radar);
+    return 0; // Replay pop edi/esi/ebp/ebx and add esp,18h, then native ret.
+}
 
 /**
  *  AF-0005B: preserve __thiscall and the original native fallback. The first

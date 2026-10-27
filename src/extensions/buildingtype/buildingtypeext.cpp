@@ -19,6 +19,8 @@
 #include "infantrytype.h"
 #include "map.h"
 #include "mouse.h"
+#include "radar.h"
+#include "rules.h"
 #include "scenario.h"
 #include "tibsun_defines.h"
 #include "tibsun_globals.h"
@@ -28,17 +30,32 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace
 {
     bool FoundationSyncCRCValid = false;
     bool FoundationSyncCRCPresent = false;
     unsigned FoundationSyncCRC = 0;
+
+    // Derived UI state only. Never part of the raw-saved type extension or its CRC.
+    const RadarClass* FoundationRadarOwner = nullptr;
+    float FoundationRadarZoom = 0.0f;
+    std::map<std::pair<int, int>, DynamicVectorClass<Point2D>> FoundationRadarShapes;
+
+    void Clear_Foundation_Radar()
+    {
+        FoundationRadarShapes.clear();
+        FoundationRadarOwner = nullptr;
+        FoundationRadarZoom = 0.0f;
+    }
 
     void Invalidate_Foundation_Sync_CRC()
     {
@@ -131,6 +148,7 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const NoInitClass &noinit
  */
 BuildingTypeClassExtension::~BuildingTypeClassExtension()
 {
+    Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
     BuildingTypeExtensions.Delete(this);
 }
@@ -177,6 +195,7 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
         return E_FAIL;
     }
     std::fill(CustomFoundationCells + FoundationCellCount, std::end(CustomFoundationCells), REFRESH_EOL);
+    Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
     
     return hr;
@@ -298,6 +317,7 @@ void BuildingTypeClassExtension::Reset_Custom_Foundation()
     FoundationHeight = 0;
     FoundationCellCount = 0;
     std::fill(std::begin(CustomFoundationCells), std::end(CustomFoundationCells), REFRESH_EOL);
+    Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
 }
 
@@ -316,8 +336,8 @@ void BuildingTypeClassExtension::Read_Custom_Foundation()
     IsCustomFoundationEnabled = ArtINI.Get_Bool(section, "CustomFoundation", false);
     if (!IsCustomFoundationEnabled) return;
 
-    if (This()->Size != BSIZE_33) {
-        Reject_Custom_Foundation("native Foundation must be 3x3");
+    if (This()->Size < BSIZE_FIRST || This()->Size >= BSIZE_COUNT) {
+        Reject_Custom_Foundation("valid native Foundation fallback required");
         return;
     }
 
@@ -328,25 +348,27 @@ void BuildingTypeClassExtension::Read_Custom_Foundation()
     int height = 0;
     const char* dimensions[] = {"Foundation.X", "Foundation.Y"};
     int* values[] = {&width, &height};
+    const int limits[] = {CustomFoundationMaxWidth, CustomFoundationMaxHeight};
     for (int i = 0; i < 2; ++i) {
         const int length = ArtINI.Get_String(section, dimensions[i], "", buffer, sizeof(buffer));
         const char* cursor = buffer;
         if (length <= 0 || length >= static_cast<int>(sizeof(buffer)) - 1 ||
-            !Read_Foundation_Integer(cursor, *values[i]) || *cursor != '\0' || *values[i] != 3) {
-            Reject_Custom_Foundation("Foundation.X and Foundation.Y must both be 3");
+            !Read_Foundation_Integer(cursor, *values[i]) || *cursor != '\0' ||
+            *values[i] <= 0 || *values[i] > limits[i]) {
+            Reject_Custom_Foundation("Foundation.X/Y must be in 1..64");
             return;
         }
     }
 
     Cell cells[CustomFoundationMaxCells];
-    bool seen[3][3] = {};
+    bool seen[CustomFoundationMaxHeight][CustomFoundationMaxWidth] = {};
     int count = 0;
     for (int i = 0; i <= CustomFoundationMaxCells; ++i) {
         char key[32];
         std::snprintf(key, sizeof(key), "Foundation.%d", i);
         if (!ArtINI.Is_Present(section, key)) break;
         if (i == CustomFoundationMaxCells) {
-            Reject_Custom_Foundation("more than 31 occupied cells");
+            Reject_Custom_Foundation("more than 119 occupied cells");
             return;
         }
 
@@ -364,8 +386,8 @@ void BuildingTypeClassExtension::Read_Custom_Foundation()
             Reject_Custom_Foundation("malformed Foundation.N coordinate");
             return;
         }
-        if (x < 0 || x >= 3 || y < 0 || y >= 3) {
-            Reject_Custom_Foundation("Foundation.N coordinate outside 0..2");
+        if (x < 0 || x >= width || y < 0 || y >= height) {
+            Reject_Custom_Foundation("Foundation.N coordinate outside bounding dimensions");
             return;
         }
         if (seen[y][x]) {
@@ -392,16 +414,19 @@ void BuildingTypeClassExtension::Read_Custom_Foundation()
 
 bool BuildingTypeClassExtension::Validate_Custom_Foundation_Cells() const
 {
-    if (FoundationWidth != 3 || FoundationHeight != 3 ||
+    if (FoundationWidth <= 0 || FoundationWidth > CustomFoundationMaxWidth ||
+        FoundationHeight <= 0 || FoundationHeight > CustomFoundationMaxHeight ||
         FoundationCellCount <= 0 || FoundationCellCount > CustomFoundationMaxCells ||
-        FoundationCellCount > 9 || CustomFoundationCells[0] != Cell(0, 0)) {
+        FoundationCellCount > FoundationWidth * FoundationHeight ||
+        CustomFoundationCells[0] != Cell(0, 0)) {
         return false;
     }
     int previous = -1;
     for (int i = 0; i < FoundationCellCount; ++i) {
         const Cell& cell = CustomFoundationCells[i];
-        if (cell.X < 0 || cell.X >= 3 || cell.Y < 0 || cell.Y >= 3) return false;
-        const int index = cell.Y * 3 + cell.X;
+        if (cell.X < 0 || cell.X >= FoundationWidth ||
+            cell.Y < 0 || cell.Y >= FoundationHeight) return false;
+        const int index = cell.Y * FoundationWidth + cell.X;
         if (index <= previous) return false;
         previous = index;
     }
@@ -420,8 +445,8 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     const BuildingTypeClass* type = This_Const();
     const char* reason = nullptr;
 
-    if (!Validate_Custom_Foundation_Cells() || type->Size != BSIZE_33) {
-        reason = "invalid native 3x3 mask";
+    if (!Validate_Custom_Foundation_Cells() || type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT) {
+        reason = "invalid custom mask or native fallback";
     } else if (type->ToBuild != RTTI_NONE || type->IsWeaponsFactory || type->IsConstructionYard ||
                type->IsHelipad || type->IsGDIBarracks || type->IsNODBarracks) {
         reason = "factory/construction/service building";
@@ -459,19 +484,24 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     IsCustomFoundationValid = true;
     Invalidate_Foundation_Sync_CRC();
     if (!was_valid) {
-        DEV_DEBUG_INFO("[CUSTOMFOUNDATION] type={} event=LOADED width=3 height=3 count={}\n",
-            Name(), FoundationCellCount);
+        DEV_DEBUG_INFO("[CUSTOMFOUNDATION] type={} event=LOADED width={} height={} count={}\n",
+            Name(), FoundationWidth, FoundationHeight, FoundationCellCount);
     }
 }
 
 bool BuildingTypeClassExtension::Custom_Foundation_In_Radar(const Cell& origin) const
 {
-    // Keep native 3x3 bounding helpers inside the engine's physical cell array,
-    // even if an outer row/column is absent from the logical occupied mask.
+    // Protect the native AdjacentObjectCount halo and the wider base-reservation
+    // helpers. Release scans up to 3*spacing past the box; InnerCells queries
+    // include spacing+2 cells plus one adjacent-cell lookup. No helper is replaced.
+    const int spacing = Rule->AIBaseSpacing;
+    if (spacing < 0 || spacing > std::min(MAP_CELL_W, MAP_CELL_H)) return false;
+    const int margin = std::max(3 * spacing, spacing + 3);
     const int origin_x = origin.X;
     const int origin_y = origin.Y;
-    if (origin_x < 0 || origin_y < 0 ||
-        origin_x > MAP_CELL_W - 3 || origin_y > MAP_CELL_H - 3) return false;
+    if (origin_x < margin || origin_y < margin ||
+        origin_x > MAP_CELL_W - FoundationWidth - margin ||
+        origin_y > MAP_CELL_H - FoundationHeight - margin) return false;
 
     for (int i = 0; i < FoundationCellCount; ++i) {
         const int x = origin_x + CustomFoundationCells[i].X;
@@ -481,6 +511,66 @@ bool BuildingTypeClassExtension::Custom_Foundation_In_Radar(const Cell& origin) 
         if (!Map.In_Radar(cell) || Map.Array[y * MAP_CELL_W + x] == nullptr) return false;
     }
     return true;
+}
+
+/**
+ *  Native Radar::Get_Foundation returns a reference to a DynamicVector<Point2D>.
+ *  Cache the same filled isometric bounding shape by dimensions, outside the
+ *  raw-saved extension. std::map keeps returned vector addresses stable.
+ */
+const DynamicVectorClass<Point2D>* BuildingTypeClassExtension::Custom_Foundation_Radar(const RadarClass& radar) const
+{
+    if (!(radar.ZoomFactor > 0.0f) || !std::isfinite(radar.ZoomFactor)) return nullptr;
+    if (FoundationRadarOwner != &radar || FoundationRadarZoom != radar.ZoomFactor) {
+        Clear_Foundation_Radar();
+        FoundationRadarOwner = &radar;
+        FoundationRadarZoom = radar.ZoomFactor;
+    }
+
+    auto [entry, inserted] = FoundationRadarShapes.try_emplace(std::make_pair(FoundationWidth, FoundationHeight));
+    auto& shape = entry->second;
+    if (!inserted) return &shape;
+
+    // Match the native x87 calculation: multiply the stored float zoom in
+    // extended precision, add 0.5, apply the 1/2-pixel minimum, then truncate.
+    const double zoom = radar.ZoomFactor;
+    const double scaled_width = std::max(FoundationWidth == 1 ? 1.0 : 2.0, FoundationWidth * zoom + 0.5);
+    const double scaled_height = std::max(FoundationHeight == 1 ? 1.0 : 2.0, FoundationHeight * zoom + 0.5);
+    // Defensive UI budget for invalid/extreme radar scales. A placed bounding
+    // box fits the radar's 140x108 map image; 512 pixels per axis leaves headroom.
+    // Never let bad derived UI state cause an unbounded allocation or int cast.
+    if (scaled_width >= MAP_CELL_W + 1.0 || scaled_height >= MAP_CELL_H + 1.0) {
+        DEV_DEBUG_WARNING("[CUSTOMFOUNDATION] type={} event=RADAR_REJECTED reason=radar pixel budget\n", Name());
+        return &shape;
+    }
+    const int zw = static_cast<int>(scaled_width);
+    const int zh = static_cast<int>(scaled_height);
+    const int count = zw * zh + (zw - 1) * (zh - 1);
+    if (!shape.Resize(count)) return &shape;
+    shape.Set_Growth_Step(0);
+
+    for (int y = 0; y < zw + zh - 1; ++y) {
+        const int begin = y < zh ? -y : y - 2 * zh + 2;
+        const int end = y < zw ? y : 2 * zw - y - 2;
+        for (int x = begin; x <= end; ++x) {
+            shape.Add(Point2D(x, y));
+        }
+    }
+    return &shape;
+}
+
+void BuildingTypeClassExtension::Rebuild_Custom_Foundation_Radar(const RadarClass& radar)
+{
+    Clear_Foundation_Radar();
+    // Post-load radar setup can precede extension swizzling. The first normal
+    // getter will build any missing entry after load, without serialized pointers.
+    if (Vinifera_PerformingLoad) return;
+    for (int i = 0; i < BuildingTypeExtensions.Count(); ++i) {
+        const auto ext = BuildingTypeExtensions[i];
+        if (ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
+            ext->Custom_Foundation_Radar(radar);
+        }
+    }
 }
 
 void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const

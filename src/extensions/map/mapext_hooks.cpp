@@ -12,6 +12,7 @@
 #include "mapext_hooks.h"
 
 #include "battleui.h"
+#include "buildingtypeext.h"
 #include "cell.h"
 #include "extension.h"
 #include "hooker.h"
@@ -67,7 +68,7 @@ void MapClassExt::_Place_Down(Cell& cell, ObjectClass* object)
     if (!object) return;
 
     if (object->Class_Of()->IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
-        Cell xlist[32];
+        Cell xlist[BuildingTypeClassExtension::CustomFoundationStorageSize];
         List_Copy(object->Occupy_List(), std::size(xlist), xlist);
         Cell const* list = xlist;
         while (*list != REFRESH_EOL) {
@@ -95,7 +96,7 @@ void MapClassExt::_Pick_Up(Cell& cell, ObjectClass* object)
     if (!object) return;
 
     if (object->Class_Of()->IsFootprint && object->In_Which_Layer() == LAYER_GROUND) {
-        Cell xlist[32];
+        Cell xlist[BuildingTypeClassExtension::CustomFoundationStorageSize];
         List_Copy(object->Occupy_List(), std::size(xlist), xlist);
         Cell const* list = xlist;
         while (*list != REFRESH_EOL) {

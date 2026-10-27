@@ -12,6 +12,8 @@
 #include "buildingtype.h"
 #include "technotypeext.h"
 
+class RadarClass;
+
 
 class DECLSPEC_UUID(UUID_BUILDINGTYPE_EXTENSION)
 BuildingTypeClassExtension final : public TechnoTypeClassExtension
@@ -46,10 +48,15 @@ public:
 
     // AF-0005B: one immutable, type-owned mask for both Occupy_List modes.
     static constexpr int CustomFoundationStorageSize = 120;
-    static constexpr int CustomFoundationMaxCells = 31;
+    static constexpr int CustomFoundationMaxCells = CustomFoundationStorageSize - 1;
+    // AF-0005C project limits: bound native rectangular loops independently of occupied count.
+    static constexpr int CustomFoundationMaxWidth = 64;
+    static constexpr int CustomFoundationMaxHeight = 64;
 
     void Finalize_Custom_Foundation();
     bool Custom_Foundation_In_Radar(const Cell& origin) const;
+    const DynamicVectorClass<Point2D>* Custom_Foundation_Radar(const RadarClass& radar) const;
+    static void Rebuild_Custom_Foundation_Radar(const RadarClass& radar);
     static unsigned Custom_Foundation_Sync_CRC(unsigned native_crc);
 
 private:

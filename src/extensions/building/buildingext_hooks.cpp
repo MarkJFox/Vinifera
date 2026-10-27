@@ -63,8 +63,27 @@
 #include "voc.h"
 #include "vox.h"
 #include "weapontype.h"
+#include "wave.h"
 
 #include <algorithm>
+
+DEFINE_HOOK(0x00672B68, _WaveClass_Custom_Foundation_Distance, 8)
+{
+    GET(WaveClass*, wave, ESI);
+    const int raw_distance = R->EAX<int>();
+    if (wave->Type == WAVE_SONIC && wave->xTarget != nullptr && wave->xTarget->RTTI == RTTI_BUILDING) {
+        const auto target = static_cast<BuildingClass*>(wave->xTarget);
+        const auto ext = target->Class != nullptr ? Extension::Fetch(target->Class) : nullptr;
+        if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid &&
+            target->IsActive && target->IsDown && !target->IsInLimbo && target->Strength > 0) {
+            // Match the native building extent used by TechnoTypeClass::In_Range.
+            const int building_allowance = (ext->FoundationWidth + ext->FoundationHeight) * (CELL_LEPTON_W / 4);
+            const int adjusted_distance = std::max(0, raw_distance - building_allowance);
+            R->EAX(adjusted_distance);
+        }
+    }
+    return 0; // Replay mov [esp+10h],eax and fild using the selected distance; keep the native comparison.
+}
 
 
 /**

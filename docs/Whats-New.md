@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005C extends custom foundations to bounding dimensions from 1 to 64 cells per axis and up to 119 occupied cells. The extension layout and save basis `0x160000` are unchanged; AF-0005B snapshots remain structurally compatible. See [AF-0005C](AF-0005C.md).
 - Aftermath AF-0005B adds saved BuildingType custom foundation masks and raises the save basis to `0x160000`. Earlier saves are rejected; start a new game. See [AF-0005B](AF-0005B.md).
 - Aftermath AF-0004H6A adds saved manual/native FixedWing attack ownership and raises the save basis to `0x150000`. Start a new game; earlier saves, including H5B, are rejected. See [AF-0004H6A](AF-0004H6A.md).
 - Aftermath AF-0004H adds persistent FixedWing Guard/CAP context and raises the save basis from `0x130000` to `0x140000`. Start a new game; AF-0004G/G2 and older saves are rejected. See [AF-0004H](AF-0004H.md).
@@ -57,6 +58,14 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0005C1
+
+- Fix Sonic/Disruptor attacks against large custom-foundation buildings failing despite the attacker being within weapon range. See [AF-0005C1](AF-0005C1.md).
+
+### Aftermath AF-0005C
+
+- Add opt-in custom building foundations with bounds up to 64x64 cells, irregular masks of up to 119 occupied cells, movement through unoccupied cells, radar support and save/load support. Factory, dock and other special building types remain excluded. See [AF-0005C](AF-0005C.md).
 
 ### Aftermath AF-0005B
 
