@@ -54,6 +54,7 @@ public:
     static constexpr int CustomFoundationMaxHeight = 64;
 
     void Finalize_Custom_Foundation();
+    bool Is_Custom_Foundation_Infantry_Factory_Eligible() const;
     bool Custom_Foundation_In_Radar(const Cell& origin) const;
     const DynamicVectorClass<Point2D>* Custom_Foundation_Radar(const RadarClass& radar) const;
     static void Rebuild_Custom_Foundation_Radar(const RadarClass& radar);

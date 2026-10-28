@@ -59,6 +59,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ## Changelog
 
+### Aftermath AF-0005D1
+
+- Support custom foundations for pure infantry factories. Validated types try native Barracks preference cells, then deterministically search the custom bounds for usable infantry exits. Preserve native production, rally, refund and save/load behavior. See [AF-0005D1](AF-0005D1.md).
+
 ### Aftermath AF-0005C1
 
 - Fix Sonic/Disruptor attacks against large custom-foundation buildings failing despite the attacker being within weapon range. See [AF-0005C1](AF-0005C1.md).

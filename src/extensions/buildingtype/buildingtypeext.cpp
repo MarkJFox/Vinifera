@@ -443,12 +443,14 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     Read_Custom_Foundation();
     if (!IsCustomFoundationEnabled || FoundationCellCount == 0) return;
     const BuildingTypeClass* type = This_Const();
+    const bool infantry_factory = type->ToBuild == RTTI_INFANTRYTYPE;
     const char* reason = nullptr;
 
     if (!Validate_Custom_Foundation_Cells() || type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT) {
         reason = "invalid custom mask or native fallback";
-    } else if (type->ToBuild != RTTI_NONE || type->IsWeaponsFactory || type->IsConstructionYard ||
-               type->IsHelipad || type->IsGDIBarracks || type->IsNODBarracks) {
+    } else if ((type->ToBuild != RTTI_NONE && !infantry_factory) ||
+               type->IsWeaponsFactory || type->IsConstructionYard || type->IsHelipad ||
+               (!infantry_factory && (type->IsGDIBarracks || type->IsNODBarracks))) {
         reason = "factory/construction/service building";
     } else if (type->IsRefinery || type->IsWeeder || type->FreeUnit != nullptr ||
                type->IsCanUnitRepair || type->IsCanUnitReload || type->IsDockUnload ||
@@ -486,7 +488,20 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     if (!was_valid) {
         DEV_DEBUG_INFO("[CUSTOMFOUNDATION] type={} event=LOADED width={} height={} count={}\n",
             Name(), FoundationWidth, FoundationHeight, FoundationCellCount);
+        if (infantry_factory && Vinifera_DeveloperMode) {
+            DEBUG_INFO("[CFINF] type={} event=ELIGIBLE width={} height={} count={}\n",
+                Name(), FoundationWidth, FoundationHeight, FoundationCellCount);
+        }
     }
+}
+
+bool BuildingTypeClassExtension::Is_Custom_Foundation_Infantry_Factory_Eligible() const
+{
+    // Finalize_Custom_Foundation validates every remaining role and reverse
+    // reference before setting IsCustomFoundationValid. Reuse that result;
+    // do not cache another eligibility flag in the saved extension layout.
+    return IsCustomFoundationEnabled && IsCustomFoundationValid &&
+        This_Const()->ToBuild == RTTI_INFANTRYTYPE;
 }
 
 bool BuildingTypeClassExtension::Custom_Foundation_In_Radar(const Cell& origin) const

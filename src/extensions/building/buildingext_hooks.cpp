@@ -59,6 +59,7 @@
 #include "unitext.h"
 #include "unittype.h"
 #include "unittypeext.h"
+#include "vinifera_globals.h"
 #include "vinifera_saveload.h"
 #include "voc.h"
 #include "vox.h"
@@ -66,6 +67,72 @@
 #include "wave.h"
 
 #include <algorithm>
+
+namespace
+{
+    Cell Find_Custom_Foundation_Infantry_Exit(const BuildingClass* building,
+        const TechnoClass* product, const BuildingTypeClassExtension& type_ext)
+    {
+        const Cell origin = building->Get_Cell();
+        Cell exit = CELL_NONE;
+
+        const auto try_exit = [&](int x, int y, const char* preference) {
+            const Cell candidate(origin.X + x, origin.Y + y);
+            // TSpp declares Can_Enter_Cell non-const, unlike the product
+            // parameter of native Find_Exit_Cell. Keep the exact native call.
+            const bool usable = Map.In_Radar(candidate) &&
+                const_cast<TechnoClass*>(product)->Can_Enter_Cell(
+                    &Map[candidate], FACING_NONE, -1, nullptr, true) == MOVE_OK;
+
+            // Only preferred-cell attempts and the selected perimeter cell:
+            // no per-frame hooks and no log for every rejected perimeter cell.
+            if (Vinifera_DeveloperMode && (preference != nullptr || usable)) {
+                DEBUG_INFO("[CFINF] type={} event={} priority={} exit=({}, {}) usable={}\n",
+                    building->Class->Name(), preference != nullptr ? "PREFERRED" : "SELECTED",
+                    preference != nullptr ? preference : "PERIMETER", candidate.X, candidate.Y, usable);
+            }
+            if (usable) exit = candidate;
+            return usable;
+        };
+
+        if (building->Class->IsGDIBarracks && try_exit(1, 2, "GDI")) return exit;
+        if (building->Class->IsNODBarracks && try_exit(2, 2, "NOD")) return exit;
+
+        // Preserve the native rectangle-fallback order, including repeated
+        // corners. Generate candidates directly: no exit buffer or RNG.
+        for (int x = -1; x <= type_ext.FoundationWidth; ++x) {
+            if (try_exit(x, -1, nullptr) || try_exit(x, type_ext.FoundationHeight, nullptr)) return exit;
+        }
+        for (int y = -1; y <= type_ext.FoundationHeight; ++y) {
+            if (try_exit(-1, y, nullptr) || try_exit(type_ext.FoundationWidth, y, nullptr)) return exit;
+        }
+
+        if (Vinifera_DeveloperMode) {
+            DEBUG_INFO("[CFINF] type={} event=NO_EXIT anchor=({}, {}) width={} height={}\n",
+                building->Class->Name(), origin.X, origin.Y, type_ext.FoundationWidth, type_ext.FoundationHeight);
+        }
+        return CELL_NONE;
+    }
+}
+
+/**
+ *  AF-0005D1: native __thiscall with hidden Cell* at ESP+4 and
+ *  const TechnoClass* at ESP+8. The six displaced bytes are
+ *  sub esp,18h / push ebx / mov ebx,ecx. No prologue ran on the custom path.
+ */
+DEFINE_HOOK(0x00434140, _BuildingClass_Find_Exit_Cell_Custom_Foundation_Infantry, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    const auto ext = Extension::Fetch(building->Class);
+    if (ext == nullptr || !ext->Is_Custom_Foundation_Infantry_Factory_Eligible()) return 0;
+
+    GET_STACK(Cell*, result, 0x4);
+    GET_STACK(const TechnoClass*, product, 0x8);
+    *result = Find_Custom_Foundation_Infantry_Exit(building, product, *ext);
+    R->EAX(result);
+    return 0x004342EB; // Only ret 8; do not execute the native frame-unwinding epilogue.
+}
 
 DEFINE_HOOK(0x00672B68, _WaveClass_Custom_Foundation_Distance, 8)
 {
