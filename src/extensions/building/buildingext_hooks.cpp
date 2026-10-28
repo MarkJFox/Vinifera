@@ -76,7 +76,7 @@ namespace
         const Cell origin = building->Get_Cell();
         Cell exit = CELL_NONE;
 
-        const auto try_exit = [&](int x, int y, const char* preference) {
+        const auto try_exit = [&](int x, int y, const char* preference, bool custom_exit = false) {
             const Cell candidate(origin.X + x, origin.Y + y);
             // TSpp declares Can_Enter_Cell non-const, unlike the product
             // parameter of native Find_Exit_Cell. Keep the exact native call.
@@ -84,9 +84,12 @@ namespace
                 const_cast<TechnoClass*>(product)->Can_Enter_Cell(
                     &Map[candidate], FACING_NONE, -1, nullptr, true) == MOVE_OK;
 
-            // Only preferred-cell attempts and the selected perimeter cell:
+            // Only the explicit/preferred attempts and the selected perimeter cell:
             // no per-frame hooks and no log for every rejected perimeter cell.
-            if (Vinifera_DeveloperMode && (preference != nullptr || usable)) {
+            if (Vinifera_DeveloperMode && custom_exit) {
+                DEBUG_INFO("[CFINF] type={} event=CUSTOM_EXIT relative=({}, {}) absolute=({}, {}) usable={}\n",
+                    building->Class->Name(), x, y, candidate.X, candidate.Y, usable);
+            } else if (Vinifera_DeveloperMode && (preference != nullptr || usable)) {
                 DEBUG_INFO("[CFINF] type={} event={} priority={} exit=({}, {}) usable={}\n",
                     building->Class->Name(), preference != nullptr ? "PREFERRED" : "SELECTED",
                     preference != nullptr ? preference : "PERIMETER", candidate.X, candidate.Y, usable);
@@ -94,6 +97,9 @@ namespace
             if (usable) exit = candidate;
             return usable;
         };
+
+        if (type_ext.CustomInfantryExitCellSet &&
+            try_exit(type_ext.CustomInfantryExitCell.X, type_ext.CustomInfantryExitCell.Y, nullptr, true)) return exit;
 
         if (building->Class->IsGDIBarracks && try_exit(1, 2, "GDI")) return exit;
         if (building->Class->IsNODBarracks && try_exit(2, 2, "NOD")) return exit;
@@ -132,6 +138,39 @@ DEFINE_HOOK(0x00434140, _BuildingClass_Find_Exit_Cell_Custom_Foundation_Infantry
     *result = Find_Custom_Foundation_Infantry_Exit(building, product, *ext);
     R->EAX(result);
     return 0x004342EB; // Only ret 8; do not execute the native frame-unwinding epilogue.
+}
+
+/**
+ *  AF-0005D2: before either native Barracks ExitCoord branch. ESI=building,
+ *  [ESP+10h]=selected Cell, [ESP+14h]=anchor Cell, [ESP+38h]=spawn Coord.
+ *  The displaced seven-byte instruction is cmp byte ptr [edx+82Bh],0.
+ */
+DEFINE_HOOK(0x0042D0A4, _BuildingClass_Exit_Object_Custom_Infantry_ExitCoord, 7)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    const auto ext = Extension::Fetch(building->Class);
+    if (ext == nullptr || !ext->Is_Custom_Foundation_Infantry_Factory_Eligible() ||
+        !ext->CustomInfantryExitCellSet) return 0;
+
+    GET_STACK(Cell, exit, 0x10);
+    GET_STACK(Cell, origin, 0x14);
+    if (exit != origin + ext->CustomInfantryExitCell) return 0;
+
+    static_assert(sizeof(Coord) == 12, "TS infantry spawn Coord ABI changed");
+    REF_STACK(Coord, spawn, 0x38);
+    const Coord base = spawn;
+    const Coord& offset = building->Class->ExitCoordinate;
+    spawn += offset;
+    R->EBP(spawn.X); // Keep the native spawn-X register consistent; EBX retains facing.
+    if (Vinifera_DeveloperMode) {
+        DEBUG_INFO("[CFINF] type={} event=CUSTOM_EXIT_OFFSET exitCell=({}, {}) base=({}, {}, {}) ExitCoord=({}, {}, {}) result=({}, {}, {})\n",
+            building->Class->Name(), exit.X, exit.Y, base.X, base.Y, base.Z,
+            offset.X, offset.Y, offset.Z, spawn.X, spawn.Y, spawn.Z);
+    }
+    // Skip BOTH native GDI/Nod offset branches, also when the custom cell
+    // equals their preference. Continue with the unchanged Unlimbo path.
+    return 0x0042D14F;
 }
 
 DEFINE_HOOK(0x00672B68, _WaveClass_Custom_Foundation_Distance, 8)

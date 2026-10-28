@@ -123,7 +123,9 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     IsCustomFoundationValid(false),
     FoundationWidth(0),
     FoundationHeight(0),
-    FoundationCellCount(0)
+    FoundationCellCount(0),
+    CustomInfantryExitCellSet(false),
+    CustomInfantryExitCell(0, 0)
 {
     Reset_Custom_Foundation();
     BuildingTypeExtensions.Add(this);
@@ -194,6 +196,19 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
     } else if (FoundationWidth != 0 || FoundationHeight != 0 || FoundationCellCount != 0) {
         return E_FAIL;
     }
+    if (CustomInfantryExitCellSet) {
+        const char* reason = !IsCustomFoundationValid ? "INVALID_SAVED_FOUNDATION" :
+            Custom_Infantry_Exit_Cell_Error(CustomInfantryExitCell.X, CustomInfantryExitCell.Y);
+        if (reason != nullptr) {
+            // ThisPtr is not swizzled yet. Do not read type flags or Name().
+            if (Vinifera_DeveloperMode) {
+                DEBUG_WARNING("[CFINF] event=CUSTOM_EXIT_REJECT source=SAVE relative=({}, {}) reason={}\n",
+                    CustomInfantryExitCell.X, CustomInfantryExitCell.Y, reason);
+            }
+            CustomInfantryExitCellSet = false;
+        }
+    }
+    if (!CustomInfantryExitCellSet) CustomInfantryExitCell = Cell(0, 0);
     std::fill(CustomFoundationCells + FoundationCellCount, std::end(CustomFoundationCells), REFRESH_EOL);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
@@ -316,6 +331,8 @@ void BuildingTypeClassExtension::Reset_Custom_Foundation()
     FoundationWidth = 0;
     FoundationHeight = 0;
     FoundationCellCount = 0;
+    CustomInfantryExitCellSet = false;
+    CustomInfantryExitCell = Cell(0, 0);
     std::fill(std::begin(CustomFoundationCells), std::end(CustomFoundationCells), REFRESH_EOL);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
@@ -433,6 +450,58 @@ bool BuildingTypeClassExtension::Validate_Custom_Foundation_Cells() const
     return CustomFoundationCells[FoundationCellCount] == REFRESH_EOL;
 }
 
+const char* BuildingTypeClassExtension::Custom_Infantry_Exit_Cell_Error(int x, int y) const
+{
+    if (x < -1 || x > FoundationWidth || y < -1 || y > FoundationHeight) return "OUT_OF_RANGE";
+    if (x >= 0 && x < FoundationWidth && y >= 0 && y < FoundationHeight) {
+        for (int i = 0; i < FoundationCellCount; ++i) {
+            if (CustomFoundationCells[i].X == x && CustomFoundationCells[i].Y == y) return "OCCUPIED";
+        }
+    }
+    return nullptr;
+}
+
+void BuildingTypeClassExtension::Read_Custom_Infantry_Exit_Cell()
+{
+    CustomInfantryExitCellSet = false;
+    CustomInfantryExitCell = Cell(0, 0);
+    if (!Is_Custom_Foundation_Infantry_Factory_Eligible()) return;
+    const char* section = This_Const()->GraphicName.c_str();
+    if (!ArtINI.Is_Present(section, "CustomExitCell")) return;
+
+    char buffer[128] = {};
+    const int length = ArtINI.Get_String(section, "CustomExitCell", "", buffer, sizeof(buffer));
+    const char* cursor = buffer;
+    int x = 0;
+    int y = 0;
+    bool parsed = length > 0 && length < static_cast<int>(sizeof(buffer)) - 1 &&
+        Read_Foundation_Integer(cursor, x) && *cursor == ',';
+    if (parsed) {
+        ++cursor;
+        parsed = Read_Foundation_Integer(cursor, y) && *cursor == '\0';
+    }
+    if (!parsed) {
+        if (Vinifera_DeveloperMode) {
+            DEBUG_WARNING("[CFINF] type={} event=CUSTOM_EXIT_REJECT value={} reason=MALFORMED\n", Name(), buffer);
+        }
+        return;
+    }
+    const char* reason = Custom_Infantry_Exit_Cell_Error(x, y);
+    if (reason != nullptr) {
+        if (Vinifera_DeveloperMode) {
+            DEBUG_WARNING("[CFINF] type={} event=CUSTOM_EXIT_REJECT relative=({}, {}) reason={}\n", Name(), x, y, reason);
+        }
+        return;
+    }
+    CustomInfantryExitCell = Cell(static_cast<short>(x), static_cast<short>(y));
+    CustomInfantryExitCellSet = true;
+    if (Vinifera_DeveloperMode) {
+        const Coord& offset = This_Const()->ExitCoordinate;
+        DEBUG_INFO("[CFINF] type={} event=CUSTOM_EXIT_CONFIG relative=({}, {}) ExitCoord=({}, {}, {}) bounds=({}, {})\n",
+            Name(), x, y, offset.X, offset.Y, offset.Z, FoundationWidth, FoundationHeight);
+    }
+}
+
 /**
  *  Called after every complete Rules::Objects pass. Reverse Dock/DeploysInto
  *  references cannot be validated while BuildingTypes are read before Units.
@@ -484,6 +553,7 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     }
     const bool was_valid = IsCustomFoundationValid;
     IsCustomFoundationValid = true;
+    Read_Custom_Infantry_Exit_Cell();
     Invalidate_Foundation_Sync_CRC();
     if (!was_valid) {
         DEV_DEBUG_INFO("[CUSTOMFOUNDATION] type={} event=LOADED width={} height={} count={}\n",
@@ -599,6 +669,14 @@ void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
     for (int i = 0; i < FoundationCellCount; ++i) {
         crc(static_cast<int>(CustomFoundationCells[i].X));
         crc(static_cast<int>(CustomFoundationCells[i].Y));
+    }
+    // Preserve the D1 CRC stream when the optional override is absent.
+    // Its enabled state is encoded by this tagged trailer, then Set/X/Y.
+    if (CustomInfantryExitCellSet) {
+        crc(static_cast<unsigned>(0x41463544)); // AF5D optional-exit domain.
+        crc(static_cast<int>(CustomInfantryExitCellSet));
+        crc(static_cast<int>(CustomInfantryExitCell.X));
+        crc(static_cast<int>(CustomInfantryExitCell.Y));
     }
 }
 

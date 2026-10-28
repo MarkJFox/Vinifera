@@ -62,6 +62,8 @@ public:
 
 private:
     void Read_Custom_Foundation();
+    void Read_Custom_Infantry_Exit_Cell();
+    const char* Custom_Infantry_Exit_Cell_Error(int x, int y) const;
     void Reset_Custom_Foundation();
     void Reject_Custom_Foundation(const char* reason);
     bool Validate_Custom_Foundation_Cells() const;
@@ -154,4 +156,6 @@ public:
     int FoundationHeight;
     int FoundationCellCount;
     Cell CustomFoundationCells[CustomFoundationStorageSize];
+    bool CustomInfantryExitCellSet;
+    Cell CustomInfantryExitCell;
 };

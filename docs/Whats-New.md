@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005D2 adds a saved optional infantry exit cell and raises the save basis to `0x170000`. Start a new game; earlier foundation saves, including D1, are rejected. See [AF-0005D2](AF-0005D2.md).
 - Aftermath AF-0005C extends custom foundations to bounding dimensions from 1 to 64 cells per axis and up to 119 occupied cells. The extension layout and save basis `0x160000` are unchanged; AF-0005B snapshots remain structurally compatible. See [AF-0005C](AF-0005C.md).
 - Aftermath AF-0005B adds saved BuildingType custom foundation masks and raises the save basis to `0x160000`. Earlier saves are rejected; start a new game. See [AF-0005B](AF-0005B.md).
 - Aftermath AF-0004H6A adds saved manual/native FixedWing attack ownership and raises the save basis to `0x150000`. Start a new game; earlier saves, including H5B, are rejected. See [AF-0004H6A](AF-0004H6A.md).
@@ -58,6 +59,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0005D2
+
+- Add optional ArtINI `CustomExitCell=X,Y` for pure custom-foundation infantry factories. Try the configured cell before D1 fallbacks and apply native RulesINI `ExitCoord` once to its spawn point. Invalid or blocked overrides retain D1 fallback behavior. Locally built and manually runtime-tested by the user with a 17x7/119 foundation, custom exit (8,7), both tested offsets, blocked-door perimeter fallback and production after save/load; see [AF-0005D2](AF-0005D2.md) for confirmed cases and remaining tests.
 
 ### Aftermath AF-0005D1
 
