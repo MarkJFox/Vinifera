@@ -2016,9 +2016,9 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0005D2 adds the saved optional infantry exit Cell to BuildingType extensions.
+    // AF-0005D3 adds the saved optional aircraft dock Cell to BuildingType extensions.
     // Reject older extension layouts globally, following the 0x10000 basis steps.
-    unsigned version = 0x170000;
+    unsigned version = 0x180000;
 
     /**
      *  For debug builds, offset the save file version.

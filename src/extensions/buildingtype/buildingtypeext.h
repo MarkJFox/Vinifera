@@ -55,6 +55,7 @@ public:
 
     void Finalize_Custom_Foundation();
     bool Is_Custom_Foundation_Infantry_Factory_Eligible() const;
+    bool Is_Custom_Foundation_Aircraft_Helipad_Eligible() const;
     bool Custom_Foundation_In_Radar(const Cell& origin) const;
     const DynamicVectorClass<Point2D>* Custom_Foundation_Radar(const RadarClass& radar) const;
     static void Rebuild_Custom_Foundation_Radar(const RadarClass& radar);
@@ -64,6 +65,9 @@ private:
     void Read_Custom_Foundation();
     void Read_Custom_Infantry_Exit_Cell();
     const char* Custom_Infantry_Exit_Cell_Error(int x, int y) const;
+    bool Read_Custom_Aircraft_Dock_Cell();
+    bool Has_Custom_Foundation_Cell(int x, int y) const;
+    const char* Custom_Aircraft_Dock_Cell_Error(int x, int y) const;
     void Reset_Custom_Foundation();
     void Reject_Custom_Foundation(const char* reason);
     bool Validate_Custom_Foundation_Cells() const;
@@ -158,4 +162,6 @@ public:
     Cell CustomFoundationCells[CustomFoundationStorageSize];
     bool CustomInfantryExitCellSet;
     Cell CustomInfantryExitCell;
+    bool CustomAircraftDockCellSet;
+    Cell CustomAircraftDockCell;
 };

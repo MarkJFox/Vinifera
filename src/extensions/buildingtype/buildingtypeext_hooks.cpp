@@ -51,7 +51,7 @@ DEFINE_HOOK(0x0043FF50, _BuildingTypeClass_Height_Custom_Foundation, 6)
     const auto ext = Extension::Fetch(type);
     if (ext != nullptr && ext->IsCustomFoundationEnabled && ext->IsCustomFoundationValid) {
         R->EAX(ext->FoundationHeight);
-        return 0x0043FF8A; // ret 4; custom types cannot have a bib.
+        return 0x0043FF8A; // ret 4; custom types cannot use IsBibbed.
     }
     return 0;
 }

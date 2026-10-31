@@ -80,12 +80,13 @@ namespace
     }
 
     template<class T>
-    bool Has_Foundation_Service_Reference(const DynamicVectorClass<T*>& types, const BuildingTypeClass* target)
+    bool Has_Foundation_Service_Reference(const DynamicVectorClass<T*>& types, const BuildingTypeClass* target,
+        bool allow_dock = false)
     {
         for (int i = 0; i < types.Count(); ++i) {
             const auto type = types[i];
             if (type->DeploysInto == target) return true;
-            for (int j = 0; j < type->Dock.Count(); ++j) {
+            for (int j = 0; !allow_dock && j < type->Dock.Count(); ++j) {
                 if (type->Dock[j] == target) return true;
             }
         }
@@ -125,7 +126,9 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     FoundationHeight(0),
     FoundationCellCount(0),
     CustomInfantryExitCellSet(false),
-    CustomInfantryExitCell(0, 0)
+    CustomInfantryExitCell(0, 0),
+    CustomAircraftDockCellSet(false),
+    CustomAircraftDockCell(0, 0)
 {
     Reset_Custom_Foundation();
     BuildingTypeExtensions.Add(this);
@@ -209,6 +212,21 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
         }
     }
     if (!CustomInfantryExitCellSet) CustomInfantryExitCell = Cell(0, 0);
+    if (CustomAircraftDockCellSet) {
+        const char* reason = !IsCustomFoundationValid ? "INVALID_SAVED_FOUNDATION" :
+            Custom_Aircraft_Dock_Cell_Error(CustomAircraftDockCell.X, CustomAircraftDockCell.Y);
+        if (reason != nullptr) {
+            // Only owned data is safe before ThisPtr is swizzled.
+            if (Vinifera_DeveloperMode) {
+                DEBUG_WARNING("[CFPAD] event=DOCK_REJECT source=SAVE relative=({}, {}) reason={}\n",
+                    CustomAircraftDockCell.X, CustomAircraftDockCell.Y, reason);
+            }
+            if (IsCustomFoundationValid &&
+                !Has_Custom_Foundation_Cell(FoundationWidth / 2, FoundationHeight / 2)) return E_FAIL;
+            CustomAircraftDockCellSet = false;
+        }
+    }
+    if (!CustomAircraftDockCellSet) CustomAircraftDockCell = Cell(0, 0);
     std::fill(CustomFoundationCells + FoundationCellCount, std::end(CustomFoundationCells), REFRESH_EOL);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
@@ -333,6 +351,8 @@ void BuildingTypeClassExtension::Reset_Custom_Foundation()
     FoundationCellCount = 0;
     CustomInfantryExitCellSet = false;
     CustomInfantryExitCell = Cell(0, 0);
+    CustomAircraftDockCellSet = false;
+    CustomAircraftDockCell = Cell(0, 0);
     std::fill(std::begin(CustomFoundationCells), std::end(CustomFoundationCells), REFRESH_EOL);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
@@ -502,6 +522,69 @@ void BuildingTypeClassExtension::Read_Custom_Infantry_Exit_Cell()
     }
 }
 
+bool BuildingTypeClassExtension::Has_Custom_Foundation_Cell(int x, int y) const
+{
+    for (int i = 0; i < FoundationCellCount; ++i) {
+        if (CustomFoundationCells[i].X == x && CustomFoundationCells[i].Y == y) return true;
+    }
+    return false;
+}
+
+const char* BuildingTypeClassExtension::Custom_Aircraft_Dock_Cell_Error(int x, int y) const
+{
+    if (x < 0 || x >= FoundationWidth || y < 0 || y >= FoundationHeight) return "OUT_OF_RANGE";
+    return Has_Custom_Foundation_Cell(x, y) ? nullptr : "NOT_OCCUPIED";
+}
+
+bool BuildingTypeClassExtension::Read_Custom_Aircraft_Dock_Cell()
+{
+    // Called only after the complete pure-helipad role/reverse-reference checks.
+    CustomAircraftDockCellSet = false;
+    CustomAircraftDockCell = Cell(0, 0);
+    const char* section = This_Const()->GraphicName.c_str();
+    if (ArtINI.Is_Present(section, "CustomDockCell")) {
+        char buffer[128] = {};
+        const int length = ArtINI.Get_String(section, "CustomDockCell", "", buffer, sizeof(buffer));
+        const char* cursor = buffer;
+        int x = 0;
+        int y = 0;
+        bool parsed = length > 0 && length < static_cast<int>(sizeof(buffer)) - 1 &&
+            Read_Foundation_Integer(cursor, x) && *cursor == ',';
+        if (parsed) {
+            ++cursor;
+            parsed = Read_Foundation_Integer(cursor, y) && *cursor == '\0';
+        }
+        const char* reason = parsed ? Custom_Aircraft_Dock_Cell_Error(x, y) : "MALFORMED";
+        if (reason != nullptr) {
+            if (Vinifera_DeveloperMode) {
+                DEBUG_WARNING("[CFPAD] type={} event=DOCK_REJECT value={} relative=({}, {}) reason={}\n",
+                    Name(), buffer, x, y, reason);
+            }
+        } else {
+            CustomAircraftDockCell = Cell(static_cast<short>(x), static_cast<short>(y));
+            CustomAircraftDockCellSet = true;
+        }
+    }
+    // Native Center_Coord = anchor center + (W*128-128,H*128-128,0).
+    // Its containing Cell is A+(floor(W/2),floor(H/2)), including even bounds.
+    if (!CustomAircraftDockCellSet &&
+        !Has_Custom_Foundation_Cell(FoundationWidth / 2, FoundationHeight / 2)) {
+        if (Vinifera_DeveloperMode) {
+            DEBUG_WARNING("[CFPAD] type={} event=DOCK_REJECT reason=CENTER_NOT_OCCUPIED relative=({}, {})\n",
+                Name(), FoundationWidth / 2, FoundationHeight / 2);
+        }
+        return false;
+    }
+    if (Vinifera_DeveloperMode) {
+        DEBUG_INFO("[CFPAD] type={} event=DOCK_CONFIG source={} relative=({}, {}) bounds=({}, {})\n",
+            Name(), CustomAircraftDockCellSet ? "CUSTOM" : "NATIVE_CENTER",
+            CustomAircraftDockCellSet ? CustomAircraftDockCell.X : FoundationWidth / 2,
+            CustomAircraftDockCellSet ? CustomAircraftDockCell.Y : FoundationHeight / 2,
+            FoundationWidth, FoundationHeight);
+    }
+    return true;
+}
+
 /**
  *  Called after every complete Rules::Objects pass. Reverse Dock/DeploysInto
  *  references cannot be validated while BuildingTypes are read before Units.
@@ -513,16 +596,20 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     if (!IsCustomFoundationEnabled || FoundationCellCount == 0) return;
     const BuildingTypeClass* type = This_Const();
     const bool infantry_factory = type->ToBuild == RTTI_INFANTRYTYPE;
+    const bool aircraft_helipad = type->ToBuild == RTTI_AIRCRAFTTYPE &&
+        type->IsHelipad && type->IsCanUnitReload;
+    const bool pad_request = type->ToBuild == RTTI_AIRCRAFTTYPE || type->IsHelipad || type->IsCanUnitReload;
+    bool reverse_conflict = false;
     const char* reason = nullptr;
 
     if (!Validate_Custom_Foundation_Cells() || type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT) {
         reason = "invalid custom mask or native fallback";
-    } else if ((type->ToBuild != RTTI_NONE && !infantry_factory) ||
-               type->IsWeaponsFactory || type->IsConstructionYard || type->IsHelipad ||
+    } else if ((type->ToBuild != RTTI_NONE && !infantry_factory && !aircraft_helipad) ||
+               type->IsWeaponsFactory || type->IsConstructionYard || (type->IsHelipad && !aircraft_helipad) ||
                (!infantry_factory && (type->IsGDIBarracks || type->IsNODBarracks))) {
         reason = "factory/construction/service building";
     } else if (type->IsRefinery || type->IsWeeder || type->FreeUnit != nullptr ||
-               type->IsCanUnitRepair || type->IsCanUnitReload || type->IsDockUnload ||
+               type->IsCanUnitRepair || (type->IsCanUnitReload && !aircraft_helipad) || type->IsDockUnload ||
                type->IsHoverPad || type->IsHospital || type->IsArmory || type->Dock.Count() != 0) {
         reason = "dock/refinery/repair contract";
     } else if (type->IsWall || type->IsGate || type->IsLaserFencePost || type->IsLaserFence ||
@@ -534,21 +621,33 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
                type->IsICBMLauncher || type->IsMobileWar || type->IsMobileStealth ||
                type->IsCoreDefender || type->IsLimpetMine) {
         reason = "deploy/undeploy/mobile building contract";
-    } else if (type->IsBibbed || type->BibShape != nullptr ||
-               !ArtINI.Get_String(type->GraphicName.c_str(), "BibShape", std::string()).empty()) {
-        reason = "bib contract";
+    } else if (type->IsBibbed) {
+        reason = "IsBibbed contract";
+    } else if (!aircraft_helipad &&
+               (type->BibShape != nullptr ||
+                !ArtINI.Get_String(type->GraphicName.c_str(), "BibShape", std::string()).empty())) {
+        reason = "BibShape contract";
     } else if (!type->IsFootprint || type->IsCanPlaceAnywhere || type->IsBridgeRepairHut ||
                type->IsInvisibleInGame || IsNaval) {
         reason = "special placement contract";
     } else if (Has_Foundation_Service_Reference(BuildingTypes, type) ||
                Has_Foundation_Service_Reference(UnitTypes, type) ||
                Has_Foundation_Service_Reference(InfantryTypes, type) ||
-               Has_Foundation_Service_Reference(AircraftTypes, type)) {
+               Has_Foundation_Service_Reference(AircraftTypes, type, aircraft_helipad)) {
+        reverse_conflict = true;
         reason = "referenced as Dock or DeploysInto";
     }
 
     if (reason != nullptr) {
+        if (pad_request && Vinifera_DeveloperMode) {
+            DEBUG_WARNING("[CFPAD] type={} event=DOCK_REJECT reason={} detail={}\n",
+                Name(), reverse_conflict ? "REVERSE_DOCK_CONFLICT" : "ROLE_CONFLICT", reason);
+        }
         Reject_Custom_Foundation(reason);
+        return;
+    }
+    if (aircraft_helipad && !Read_Custom_Aircraft_Dock_Cell()) {
+        Reject_Custom_Foundation("helipad requires occupied custom or native center dock cell");
         return;
     }
     const bool was_valid = IsCustomFoundationValid;
@@ -562,6 +661,11 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
             DEBUG_INFO("[CFINF] type={} event=ELIGIBLE width={} height={} count={}\n",
                 Name(), FoundationWidth, FoundationHeight, FoundationCellCount);
         }
+        if (aircraft_helipad && Vinifera_DeveloperMode) {
+            DEBUG_INFO("[CFPAD] type={} event=PAD_ELIGIBLE bounds=({}, {}) count={} Factory={} Helipad={} UnitReload={}\n",
+                Name(), FoundationWidth, FoundationHeight, FoundationCellCount,
+                static_cast<int>(type->ToBuild), type->IsHelipad, type->IsCanUnitReload);
+        }
     }
 }
 
@@ -572,6 +676,13 @@ bool BuildingTypeClassExtension::Is_Custom_Foundation_Infantry_Factory_Eligible(
     // do not cache another eligibility flag in the saved extension layout.
     return IsCustomFoundationEnabled && IsCustomFoundationValid &&
         This_Const()->ToBuild == RTTI_INFANTRYTYPE;
+}
+
+bool BuildingTypeClassExtension::Is_Custom_Foundation_Aircraft_Helipad_Eligible() const
+{
+    // Finalization owns all mixed-role and reverse-reference exclusions.
+    return IsCustomFoundationEnabled && IsCustomFoundationValid &&
+        This_Const()->ToBuild == RTTI_AIRCRAFTTYPE && This_Const()->IsHelipad && This_Const()->IsCanUnitReload;
 }
 
 bool BuildingTypeClassExtension::Custom_Foundation_In_Radar(const Cell& origin) const
@@ -677,6 +788,12 @@ void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
         crc(static_cast<int>(CustomInfantryExitCellSet));
         crc(static_cast<int>(CustomInfantryExitCell.X));
         crc(static_cast<int>(CustomInfantryExitCell.Y));
+    }
+    if (CustomAircraftDockCellSet) {
+        crc(static_cast<unsigned>(0x41465044)); // AFPD: aircraft pad domain, distinct from D2.
+        crc(static_cast<int>(CustomAircraftDockCellSet));
+        crc(static_cast<int>(CustomAircraftDockCell.X));
+        crc(static_cast<int>(CustomAircraftDockCell.Y));
     }
 }
 

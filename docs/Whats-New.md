@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005D3 adds a saved optional aircraft dock cell and raises the save basis to `0x180000`. Start a new game; D2 and earlier saves are rejected. See [AF-0005D3](AF-0005D3.md).
 - Aftermath AF-0005D2 adds a saved optional infantry exit cell and raises the save basis to `0x170000`. Start a new game; earlier foundation saves, including D1, are rejected. See [AF-0005D2](AF-0005D2.md).
 - Aftermath AF-0005C extends custom foundations to bounding dimensions from 1 to 64 cells per axis and up to 119 occupied cells. The extension layout and save basis `0x160000` are unchanged; AF-0005B snapshots remain structurally compatible. See [AF-0005C](AF-0005C.md).
 - Aftermath AF-0005B adds saved BuildingType custom foundation masks and raises the save basis to `0x160000`. Earlier saves are rejected; start a new game. See [AF-0005B](AF-0005B.md).
@@ -59,6 +60,11 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0005D3
+
+- Add custom foundations for single-aircraft helipads using the combined `Factory=AircraftType`, `Helipad=yes`, `UnitReload=yes` contract. Optional ArtINI `CustomDockCell=X,Y` selects one occupied internal service cell; absent or invalid values require an occupied native center. Normal aircraft and FixedWing use the custom dock point. Locally built and core-runtime-confirmed by the user, including reload, save/load and production/service after load; see [AF-0005D3](AF-0005D3.md) for remaining regression cases.
+- D3b permits native `BibShape` graphics only for otherwise valid custom-foundation helipads; `Bib=yes`/`IsBibbed` remains excluded. Both cases are runtime-confirmed by the user. Preserve native Bib positioning and save basis `0x180000`.
 
 ### Aftermath AF-0005D2
 

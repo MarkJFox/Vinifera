@@ -70,6 +70,16 @@
 
 namespace
 {
+    bool Custom_Aircraft_Dock_Coord(const BuildingClass* building, Coord& result)
+    {
+        const auto ext = Extension::Fetch(building->Class);
+        if (ext == nullptr || !ext->Is_Custom_Foundation_Aircraft_Helipad_Eligible() ||
+            !ext->CustomAircraftDockCellSet) return false;
+        const Cell cell = building->Get_Cell() + ext->CustomAircraftDockCell;
+        result = cell.As_Coord(building->Get_Coord().Z);
+        return true;
+    }
+
     Cell Find_Custom_Foundation_Infantry_Exit(const BuildingClass* building,
         const TechnoClass* product, const BuildingTypeClassExtension& type_ext)
     {
@@ -171,6 +181,52 @@ DEFINE_HOOK(0x0042D0A4, _BuildingClass_Exit_Object_Custom_Infantry_ExitCoord, 7)
     // Skip BOTH native GDI/Nod offset branches, also when the custom cell
     // equals their preference. Continue with the unchanged Unlimbo path.
     return 0x0042D14F;
+}
+
+/**
+ *  D3 __thiscall Coord return: ECX=this, hidden result at original ESP+4.
+ *  Six bytes: sub esp,10h / push esi / mov esi,ecx. No prologue on custom path.
+ */
+DEFINE_HOOK(0x0042F2C0, _BuildingClass_Docking_Coord_Custom_Aircraft_Pad, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    Coord coord;
+    if (!Custom_Aircraft_Dock_Coord(building, coord)) return 0;
+    GET_STACK(Coord*, result, 0x4);
+    *result = coord;
+    R->EAX(result);
+    // Docking_Coord is a hot query. Trace only the proven free-pad production call.
+    GET_STACK(uintptr_t, caller, 0x0);
+    if (Vinifera_DeveloperMode && caller == 0x0042C97D) {
+        const Cell anchor = building->Get_Cell();
+        const Cell absolute = coord.As_Cell();
+        DEBUG_INFO("[CFPAD] type={} event=DOCK_COORD source=PRODUCTION_DOCK anchor=({}, {}) relative=({}, {}) absolute=({}, {}) coord=({}, {}, {}) native=FREE_PAD_UNLIMBO_ATTEMPT\n",
+            building->Class->Name(), anchor.X, anchor.Y, absolute.X - anchor.X, absolute.Y - anchor.Y,
+            absolute.X, absolute.Y, coord.X, coord.Y, coord.Z);
+    }
+    return 0x0042F3A3; // ret 4 only; the native frame was never created.
+}
+
+/**
+ *  Native Mission_Enter's landing correction bypasses Destination_Coord.
+ *  After its Center_Coord call, replace only the returned local for D3 pads.
+ *  ESI=aircraft, EAX=Coord* [native ESP+18h]. Replay six bytes at 0x0040D515:
+ *  mov edi,[eax] / mov edx,[esi] / mov ecx,esi. Facing/clamp/Z logic is native.
+ */
+DEFINE_HOOK(0x0040D515, _AircraftClass_Mission_Enter_Custom_Pad_Landing_Point, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(AircraftClass*, aircraft, ESI);
+    const auto target = aircraft->NavCom;
+    if (target != nullptr && target->Fetch_RTTI() == RTTI_BUILDING) {
+        Coord coord;
+        if (Custom_Aircraft_Dock_Coord(static_cast<const BuildingClass*>(target), coord)) {
+            GET(Coord*, result, EAX);
+            *result = coord;
+        }
+    }
+    return 0; // Original register loads and +/-5-lepton adjustment remain unchanged.
 }
 
 DEFINE_HOOK(0x00672B68, _WaveClass_Custom_Foundation_Distance, 8)
@@ -2325,6 +2381,16 @@ RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessa
             return RADIO_NEGATIVE;
         }
         if (Class->IsCanUnitRepair || Class->IsCanUnitReload || Class->IsHospital || Class->IsArmory) {
+            if (!Vinifera_PerformingLoad && Vinifera_DeveloperMode && from->RTTI == RTTI_AIRCRAFT) {
+                const auto ext = Extension::Fetch(Class);
+                if (ext != nullptr && ext->Is_Custom_Foundation_Aircraft_Helipad_Eligible()) {
+                    const Coord coord = Docking_Coord();
+                    const Cell cell = coord.As_Cell();
+                    DEBUG_INFO("[CFPAD] type={} event=SERVICE_ENTER aircraft={} dockCell=({}, {}) coord=({}, {}, {}) cellBuildingMatch={}\n",
+                        Class->Name(), from->ID, cell.X, cell.Y, coord.X, coord.Y, coord.Z,
+                        Map[coord].Cell_Building() == this);
+                }
+            }
             IsReadyToCommence = true;
             Assign_Mission(MISSION_REPAIR);
             from->Assign_Mission(MISSION_SLEEP);
