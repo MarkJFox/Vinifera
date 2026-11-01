@@ -26,6 +26,7 @@
 #include "fatal.h"
 #include "fetchres.h"
 #include "fixedwing.h"
+#include "vinifera_globals.h"
 #include "hooker.h"
 #include "house.h"
 #include "houseext.h"
@@ -3710,6 +3711,12 @@ DEFINE_HOOK(0x00637F0B, _TechnoClass_Find_Docking_Bay_Unoccupied_Aircraft_Patch,
         only_unoccupied_ptr = true;
         auto aircraft = static_cast<AircraftClass*>(this_ptr);
         GET(BuildingClass*, candidate, EDI);
+        const auto dock_ext = Extension::Fetch(candidate);
+        if (!Vinifera_PerformingLoad && dock_ext->Is_Aircraft_MultiDock()) {
+            // Same TS candidate order/CAN_LOAD/distance ranking. Bypass only
+            // the native Radio!=null gate and its already-installed FW trace.
+            return dock_ext->Can_Accept_Aircraft_Dock(aircraft) ? 0x00637F1E : 0x00638013;
+        }
         if (FixedWing::Enabled(aircraft) && !FixedWing::Dock_Candidate(aircraft, candidate)) return 0x00638013;
     }
 

@@ -10,12 +10,14 @@
 #pragma once
 
 #include "building.h"
+#include "buildingtypeext.h"
 #include "ftimer.h"
 #include "technoext.h"
 #include "ttimer.h"
 
 
 class BuildingClass;
+class AircraftClass;
 class HouseClass;
 
 
@@ -48,6 +50,24 @@ BuildingClassExtension final : public TechnoClassExtension
 
         void Produce_Cash_AI();
 
+        bool Is_Aircraft_MultiDock() const;
+        int Find_Aircraft_Dock_Slot(const AircraftClass* aircraft) const;
+        int Find_First_Free_Aircraft_Dock_Slot() const;
+        bool Has_Aircraft_Dock_Visitors() const;
+        bool Can_Accept_Aircraft_Dock(const AircraftClass* aircraft, bool production = false) const;
+        int Reserve_Aircraft_Dock(AircraftClass* aircraft, bool production = false);
+        void Release_Aircraft_Dock(AircraftClass* aircraft, const char* reason, bool notify = true, bool wake = true);
+        void Release_All_Aircraft_Docks(const char* reason);
+        bool Aircraft_Dock_Coord(const AircraftClass* aircraft, Coord& result) const;
+        bool Aircraft_Dock_Coord(int slot, Coord& result) const;
+        RadioMessageType Aircraft_Dock_Receive(RadioClass* from, RadioMessageType message, long& param);
+        RadioMessageType Aircraft_Dock_Transmit(RadioMessageType message, long& param, RadioClass* to);
+        int Aircraft_Dock_Service();
+        void Maintain_Aircraft_Docks();
+        void On_Detach(TechnoClass* target, bool all) override;
+        using TechnoClassExtension::On_Detach;
+        static bool Validate_Aircraft_Docks_After_Load();
+
     public:
         /**
          *  The delay between each cash bonus.
@@ -78,4 +98,10 @@ BuildingClassExtension final : public TechnoClassExtension
          *  with building repair bringing it back to green health).
          */
         int LastFlameSpawnFrame;
+
+        // POD only: default construction initializes; NoInit preserves the raw snapshot.
+        AircraftClass* AircraftDockVisitors[BuildingTypeClassExtension::MAX_AIRCRAFT_DOCKS];
+        // -1: reserved/not servicing, -2: service completed, >=0: absolute Frame deadline.
+        int AircraftDockReloadTimers[BuildingTypeClassExtension::MAX_AIRCRAFT_DOCKS];
+        bool AircraftDockFullReported; // Developer diagnostic suppression, not gameplay/CRC.
 };

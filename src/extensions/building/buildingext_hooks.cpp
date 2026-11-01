@@ -73,7 +73,7 @@ namespace
     bool Custom_Aircraft_Dock_Coord(const BuildingClass* building, Coord& result)
     {
         const auto ext = Extension::Fetch(building->Class);
-        if (ext == nullptr || !ext->Is_Custom_Foundation_Aircraft_Helipad_Eligible() ||
+        if (ext == nullptr || ext->Is_Aircraft_MultiDock() || !ext->Is_Custom_Foundation_Aircraft_Helipad_Eligible() ||
             !ext->CustomAircraftDockCellSet) return false;
         const Cell cell = building->Get_Cell() + ext->CustomAircraftDockCell;
         result = cell.As_Coord(building->Get_Coord().Z);
@@ -221,7 +221,10 @@ DEFINE_HOOK(0x0040D515, _AircraftClass_Mission_Enter_Custom_Pad_Landing_Point, 6
     const auto target = aircraft->NavCom;
     if (target != nullptr && target->Fetch_RTTI() == RTTI_BUILDING) {
         Coord coord;
-        if (Custom_Aircraft_Dock_Coord(static_cast<const BuildingClass*>(target), coord)) {
+        const auto building = static_cast<BuildingClass*>(target);
+        const auto ext = Extension::Fetch(building);
+        if ((ext->Is_Aircraft_MultiDock() && ext->Aircraft_Dock_Coord(aircraft, coord)) ||
+            (!ext->Is_Aircraft_MultiDock() && Custom_Aircraft_Dock_Coord(building, coord))) {
             GET(Coord*, result, EAX);
             *result = coord;
         }
@@ -245,6 +248,127 @@ DEFINE_HOOK(0x00672B68, _WaveClass_Custom_Foundation_Distance, 8)
         }
     }
     return 0; // Replay mov [esp+10h],eax and fild using the selected distance; keep the native comparison.
+}
+
+// D3c1: every local-coordinate adapter has an explicit Aircraft requester.
+namespace
+{
+    bool MultiDock_Destination(FootClass* foot, const AbstractClass* target, Coord& coord)
+    {
+        if (Vinifera_PerformingLoad || foot == nullptr || foot->RTTI != RTTI_AIRCRAFT ||
+            target == nullptr || target->Fetch_RTTI() != RTTI_BUILDING) return false;
+        const auto ext = Extension::Fetch(static_cast<const BuildingClass*>(target));
+        return ext->Is_Aircraft_MultiDock() &&
+            ext->Aircraft_Dock_Coord(static_cast<AircraftClass*>(foot), coord);
+    }
+}
+
+// Original 8B 46 78 / 3B C3 (5). ESI=pad, EDI=product, EBX=0.
+DEFINE_HOOK(0x0042C6A1, _Building_Exit_Aircraft_MultiDock_Capacity, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    const auto ext = Extension::Fetch(building);
+    if (!ext->Is_Aircraft_MultiDock()) return 0;
+    GET(AircraftClass*, aircraft, EDI);
+    // FixedWing cannot enter the pad branch, including its ion-storm exception.
+    if (Extension::Fetch(aircraft->Class)->IsFixedWing || aircraft->Class->IsCarryall) return 0x0042C6B9;
+    return ext->Can_Accept_Aircraft_Dock(aircraft, true) ? 0x0042C8EA : 0x0042C6AC;
+}
+
+// Original FF 92 A8 00 00 00 (6). Stack[0]=hidden Coord*, [4]=Pose_Dir
+// for the NEXT Unlimbo call. Emulate Docking_Coord's ret 4, never consume Facing.
+DEFINE_HOOK(0x0042C977, _Building_Exit_Aircraft_MultiDock_Coord, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    const auto ext = Extension::Fetch(building);
+    if (!ext->Is_Aircraft_MultiDock()) return 0;
+    GET(AircraftClass*, aircraft, EDI);
+    GET_STACK(Coord*, result, 0x0);
+    const int slot = ext->Reserve_Aircraft_Dock(aircraft, true);
+    if (slot < 0 || !ext->Aircraft_Dock_Coord(aircraft, *result)) {
+        ext->Release_Aircraft_Dock(aircraft, "PRODUCTION_RESERVE_FAILED");
+        R->ESP(R->ESP() + 8); // Neither nested call ran; discard buffer AND Facing.
+        return 0x0042D35D;
+    }
+    if (Vinifera_DeveloperMode) {
+        DEBUG_INFO("[MDOCK] building={} event=PRODUCTION_SLOT slot={} aircraft={}\n", building->ID, slot, aircraft->ID);
+    }
+    R->EAX(result);
+    R->ESP(R->ESP() + 4);
+    return 0x0042C97D;
+}
+
+// Original 50 / 8B CF / FF 95 C8 00 00 00 (9). EAX=Coord*, EDI=product,
+// ESI=pad; Stack[0]=Facing. Single-Dock replays the native virtual call.
+DEFINE_HOOK(0x0042C97D, _Building_Exit_Aircraft_MultiDock_Unlimbo, 9)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    const auto ext = Extension::Fetch(building);
+    if (!ext->Is_Aircraft_MultiDock()) return 0;
+    GET(AircraftClass*, aircraft, EDI);
+    GET(Coord*, coord, EAX);
+    GET_STACK(Dir256, facing, 0x0);
+    bool success = aircraft->Unlimbo(*coord, facing);
+    if (success && ext->Reserve_Aircraft_Dock(aircraft, true) < 0) {
+        aircraft->Limbo();
+        success = false;
+    }
+    if (!success) ext->Release_Aircraft_Dock(aircraft, "UNLIMBO_FAILED");
+    R->EAX(success ? 1 : 0);
+    R->ESP(R->ESP() + 4); // Native Unlimbo would consume Coord* plus saved Facing.
+    return 0x0042C986; // Keep the original test AL / JZ and ScenarioInit unwind.
+}
+
+// Original 8B 30 / 8B 78 04 (5). EBP=Foot, EAX=returned Coord*.
+DEFINE_HOOK(0x004A4AD9, _Foot_Destination_Aircraft_MultiDock, 5)
+{
+    GET(FootClass*, foot, EBP);
+    GET(Coord*, result, EAX);
+    MultiDock_Destination(foot, foot->NavCom, *result);
+    return 0;
+}
+
+// Original 8B 38 / 8B 48 04 (5). ESI=&Fly owner, Stack[20h]=Building*,
+// EAX=returned Coord*. Do not replace Fly::Process or any FixedWing entry.
+DEFINE_HOOK(0x0049BC8D, _Fly_Destination_Aircraft_MultiDock, 5)
+{
+    GET(FootClass**, owner, ESI);
+    GET_STACK(BuildingClass*, building, 0x20);
+    GET(Coord*, result, EAX);
+    if ((*owner)->Radio == building && ((*owner)->NavCom == building || (*owner)->NavCom == nullptr)) {
+        MultiDock_Destination(*owner, building, *result);
+    }
+    return 0;
+}
+
+// Original 8B 48 78 / 85 C9 (5). EAX=target Techno, ESI=Aircraft.
+// A registered visitor is already mutually linked through the extension.
+DEFINE_HOOK(0x0040E3AC, _Aircraft_AssignDestination_MultiDock_Contact, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(TechnoClass*, target, EAX);
+    GET(AircraftClass*, aircraft, ESI);
+    if (target != nullptr && target->RTTI == RTTI_BUILDING) {
+        const auto ext = Extension::Fetch(static_cast<BuildingClass*>(target));
+        if (ext->Is_Aircraft_MultiDock() && aircraft->Radio == target &&
+            ext->Find_Aircraft_Dock_Slot(aircraft) >= 0) return 0x0040E427;
+    }
+    return 0;
+}
+
+// Original 83 EC 54 / 53 / 55 (5). ECX=Building, Stack[0]=return address.
+// The multi branch creates no native frame; EAX=ticks, jump to a bare ret.
+DEFINE_HOOK(0x00431880, _Building_MissionRepair_Aircraft_MultiDock, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    const auto ext = Extension::Fetch(building);
+    if (!ext->Is_Aircraft_MultiDock()) return 0;
+    R->EAX(ext->Aircraft_Dock_Service());
+    return 0x004318DA;
 }
 
 
@@ -275,6 +399,8 @@ public:
     SuperWeaponType _Fetch_Super_Weapon2() const;
     void _Swizzle_Light_Source();
     RadioMessageType _Receive_Message(RadioClass * from, RadioMessageType message, long& param);
+    RadioMessageType _Aircraft_Dock_Transmit(RadioMessageType message, RadioClass* to);
+    RadioMessageType _Aircraft_Dock_Transmit_Data(RadioMessageType message, long& param, RadioClass* to);
     MoveType _Can_Enter_Cell(CellClass const* cell, FacingType dir, int cell_height, CellClass const*, bool) const;
     void _Draw_Overlays(const Point2D & coord, const Rect & rect);
 };
@@ -1465,6 +1591,7 @@ DEFINE_HOOK(0x00429A96, _BuildingClass_AI_ProduceCash_Patch, 0)
      *  Fetch the extension instance.
      */
     Extension::Fetch(this_ptr)->Produce_Cash_AI();
+    Extension::Fetch(this_ptr)->Maintain_Aircraft_Docks();
 
     /**
      *  Stolen bytes/code here.
@@ -2302,6 +2429,22 @@ void BuildingClassExt::_Swizzle_Light_Source()
  */
 RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessageType message, long& param)
 {
+    if (!Vinifera_PerformingLoad) {
+        auto dock_ext = Extension::Fetch(this);
+        if (dock_ext != nullptr && dock_ext->Is_Aircraft_MultiDock()) {
+            const bool dock_message = message == RADIO_HELLO || message == RADIO_OVER_OUT ||
+                message == RADIO_CAN_LOAD || message == RADIO_DOCKING || message == RADIO_MOVE_HERE ||
+                message == RADIO_IM_IN || message == RADIO_TETHER || message == RADIO_UNTETHER || message == RADIO_ON_DEPOT;
+            const bool construction_contact = from != nullptr && from->RTTI != RTTI_AIRCRAFT &&
+                (Radio == from || (from->RTTI == RTTI_BUILDING &&
+                    static_cast<BuildingClass*>(from)->Class->IsConstructionYard && !dock_ext->Has_Aircraft_Dock_Visitors()));
+            if (dock_message && !construction_contact &&
+                ((from != nullptr && from->RTTI == RTTI_AIRCRAFT) || message == RADIO_CAN_LOAD ||
+                 message == RADIO_HELLO || message == RADIO_DOCKING || message == RADIO_IM_IN)) {
+                return dock_ext->Aircraft_Dock_Receive(from, message, param);
+            }
+        }
+    }
     switch (message) {
 
         /*
@@ -2606,6 +2749,30 @@ RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessa
     return TechnoClass::Receive_Message(from, message, param);
 }
 
+RadioMessageType BuildingClassExt::_Aircraft_Dock_Transmit(RadioMessageType message, RadioClass* to)
+{
+    if (Vinifera_PerformingLoad) return RadioClass::Transmit_Message(message, to);
+    auto ext = Extension::Fetch(this);
+    if (ext == nullptr || !ext->Is_Aircraft_MultiDock()) return RadioClass::Transmit_Message(message, to);
+    const bool cy_peer = to != nullptr && to->RTTI == RTTI_BUILDING &&
+        static_cast<BuildingClass*>(to)->Class->IsConstructionYard && !ext->Has_Aircraft_Dock_Visitors();
+    if (Mission != MISSION_CONSTRUCTION && BState != BSTATE_CONSTRUCTION &&
+        !cy_peer && (Radio == nullptr || Radio->RTTI == RTTI_AIRCRAFT)) return ext->Aircraft_Dock_Transmit(message, LParam, to);
+    return RadioClass::Transmit_Message(message, to);
+}
+
+RadioMessageType BuildingClassExt::_Aircraft_Dock_Transmit_Data(RadioMessageType message, long& param, RadioClass* to)
+{
+    if (Vinifera_PerformingLoad) return RadioClass::Transmit_Message(message, param, to);
+    auto ext = Extension::Fetch(this);
+    if (ext == nullptr || !ext->Is_Aircraft_MultiDock()) return RadioClass::Transmit_Message(message, param, to);
+    const bool cy_peer = to != nullptr && to->RTTI == RTTI_BUILDING &&
+        static_cast<BuildingClass*>(to)->Class->IsConstructionYard && !ext->Has_Aircraft_Dock_Visitors();
+    if (Mission != MISSION_CONSTRUCTION && BState != BSTATE_CONSTRUCTION &&
+        !cy_peer && (Radio == nullptr || Radio->RTTI == RTTI_AIRCRAFT)) return ext->Aircraft_Dock_Transmit(message, param, to);
+    return RadioClass::Transmit_Message(message, param, to);
+}
+
 
 DEFINE_HOOK(0x004381F8, _BuildingClass_Load_SwizzleLightSource_Patch, 0)
 {
@@ -2770,6 +2937,9 @@ DEFINE_HOOK(0x0042A3D1, _BuildingClass_Unlimbo_AI_Repair_Base_Nodes, 5)
 DEFINE_HOOK(0x0042F749, _BuildingClass_Captured_Disable_Sensors, 6)
 {
     GET(BuildingClass*, this_ptr, ESI);
+
+    // Conservative D3c1 policy: unlink all visitors before the owner changes.
+    Extension::Fetch(this_ptr)->Release_All_Aircraft_Docks("OWNER_CHANGE");
 
     auto building_type = this_ptr->Class;    
 
@@ -3077,6 +3247,9 @@ void BuildingClassExtension_Hooks()
     Patch_Jump(0x0043AF60, &BuildingClassExt::_Fetch_Super_Weapon);
     Patch_Jump(0x0043AFC0, &BuildingClassExt::_Fetch_Super_Weapon2);
     Patch_Jump(0x004268C0, &BuildingClassExt::_Receive_Message);
+    // Only BuildingClass's two TX slots; preserve native RadioClass and every legacy type.
+    Change_Virtual_Address(0x006CC510, Get_Func_Address(&BuildingClassExt::_Aircraft_Dock_Transmit));
+    Change_Virtual_Address(0x006CC514, Get_Func_Address(&BuildingClassExt::_Aircraft_Dock_Transmit_Data));
     Patch_Jump(0x0042FE70, &BuildingClassExt::_Can_Enter_Cell);
     Patch_Jump(0x00428810, &BuildingClassExt::_Draw_Overlays);
 }

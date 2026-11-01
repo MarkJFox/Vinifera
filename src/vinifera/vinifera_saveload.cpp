@@ -24,6 +24,7 @@
 #include "battleui.h"
 #include "beacon.h"
 #include "building.h"
+#include "buildingext.h"
 #include "buildinglight.h"
 #include "buildingtype.h"
 #include "buildingtypeext.h"
@@ -1123,6 +1124,12 @@ bool Vinifera_Load_Game(const char* file_name)
     linkstream->Unlink_Stream(nullptr);
 
     SwizzleManager.Reset();
+    // All native and extension pointers have now been remapped. Never validate
+    // cyclic dock references while extension Load is still reading raw IDs.
+    if (!BuildingClassExtension::Validate_Aircraft_Docks_After_Load()) {
+        DEBUG_ERROR("Invalid MultiDock references or configuration in save game.\n");
+        return false;
+    }
     Post_Load_Game();
     Vinifera_Post_Load_Game();
     Map.Init_IO();

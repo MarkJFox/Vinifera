@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005D3c1 adds normal-Aircraft helipad MultiDock (`NumberOfDocks=2..16`, Art `DockingCell0..N-1`) with reservations, production, independent reload and saved contacts. FixedWing MultiDock is excluded; count absent/1 retains Single-Dock. D3 Single-Dock also accepts `DockingCell0`; `CustomDockCell` remains the compatible legacy key. Save basis is now `0x190000`; start a new game. See [AF-0005D3c1](AF-0005D3c1.md).
 - Aftermath AF-0005D3 adds a saved optional aircraft dock cell and raises the save basis to `0x180000`. Start a new game; D2 and earlier saves are rejected. See [AF-0005D3](AF-0005D3.md).
 - Aftermath AF-0005D2 adds a saved optional infantry exit cell and raises the save basis to `0x170000`. Start a new game; earlier foundation saves, including D1, are rejected. See [AF-0005D2](AF-0005D2.md).
 - Aftermath AF-0005C extends custom foundations to bounding dimensions from 1 to 64 cells per axis and up to 119 occupied cells. The extension layout and save basis `0x160000` are unchanged; AF-0005B snapshots remain structurally compatible. See [AF-0005C](AF-0005C.md).

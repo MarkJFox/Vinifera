@@ -52,6 +52,12 @@ public:
     // AF-0005C project limits: bound native rectangular loops independently of occupied count.
     static constexpr int CustomFoundationMaxWidth = 64;
     static constexpr int CustomFoundationMaxHeight = 64;
+    // Aftermath project limit, not an RA2/YR or foundation limit.
+    static constexpr int MAX_AIRCRAFT_DOCKS = 16;
+
+    void Finalize_Aircraft_Docks();
+    const char* Aircraft_Docks_Error() const;
+    bool Is_Aircraft_MultiDock() const { return AircraftDockCount > 1; }
 
     void Finalize_Custom_Foundation();
     bool Is_Custom_Foundation_Infantry_Factory_Eligible() const;
@@ -65,13 +71,16 @@ private:
     void Read_Custom_Foundation();
     void Read_Custom_Infantry_Exit_Cell();
     const char* Custom_Infantry_Exit_Cell_Error(int x, int y) const;
-    bool Read_Custom_Aircraft_Dock_Cell();
+    bool Read_Custom_Aircraft_Dock_Cell(bool require_single_dock = true);
     bool Has_Custom_Foundation_Cell(int x, int y) const;
     const char* Custom_Aircraft_Dock_Cell_Error(int x, int y) const;
     void Reset_Custom_Foundation();
     void Reject_Custom_Foundation(const char* reason);
     bool Validate_Custom_Foundation_Cells() const;
     void Custom_Foundation_CRC(CRCEngine& crc) const;
+    void Read_Aircraft_Docks(CCINIClass& ini);
+    void Disable_Aircraft_Docks(const char* reason);
+    void Aircraft_Docks_CRC(CRCEngine& crc) const;
 
 public:
     /**
@@ -164,4 +173,6 @@ public:
     Cell CustomInfantryExitCell;
     bool CustomAircraftDockCellSet;
     Cell CustomAircraftDockCell;
+    int AircraftDockCount;
+    Cell AircraftDockCells[MAX_AIRCRAFT_DOCKS];
 };

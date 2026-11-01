@@ -18,6 +18,7 @@
 #include "aircrafttypeext.h"
 #include "asserthandler.h"
 #include "building.h"
+#include "buildingext.h"
 #include "extension.h"
 #include "fixedwing.h"
 #include "hooker.h"
@@ -34,6 +35,7 @@
 #include "unitext.h"
 #include "unittype.h"
 #include "unittypeext.h"
+#include "vinifera_globals.h"
 #include "voc.h"
 #include "weapontype.h"
 
@@ -54,6 +56,7 @@ public:
     LONG STDMETHODCALLTYPE _Landing_Altitude();
     LONG STDMETHODCALLTYPE _Landing_Altitude_Thunk();
     RadioMessageType _Receive_Message(RadioClass * from, RadioMessageType message, long& param);    
+    RadioMessageType _MultiDock_Transmit_Data(RadioMessageType message, long& param, RadioClass* to);
     bool _Do_MISSION_MOVE_Apply_QMove();
 };
 
@@ -309,6 +312,22 @@ ActionType AircraftClassExt::_What_Action(ObjectClass const* target, bool disall
     return action;
 }
 
+
+/** Keep a registered MultiDock slot across native repeated-HELLO attempts. */
+RadioMessageType AircraftClassExt::_MultiDock_Transmit_Data(RadioMessageType message, long& param, RadioClass* to)
+{
+    RadioClass* peer = to != nullptr ? to : Radio;
+    // TS's native TX unconditionally sends OVER_OUT before HELLO. Preserve an
+    // already-established MultiDock slot before that native pre-unlink happens.
+    if (!Vinifera_PerformingLoad && message == RADIO_HELLO && peer != nullptr && peer == Radio && peer->RTTI == RTTI_BUILDING) {
+        auto dock = static_cast<BuildingClass*>(peer);
+        auto ext = Extension::Fetch(dock);
+        if (ext != nullptr && ext->Is_Aircraft_MultiDock() && ext->Find_Aircraft_Dock_Slot(this) >= 0) {
+            return dock->Receive_Message(this, message, param);
+        }
+    }
+    return RadioClass::Transmit_Message(message, param, to);
+}
 
 /**
  *  AircraftClass::Receive_Message replacement.
@@ -1067,4 +1086,8 @@ void AircraftClassExtension_Hooks()
     Patch_Jump(0x0040B7E0, &AircraftClassExt::_What_Action);
     Patch_Jump(0x0040EDD0, &AircraftClassExt::_Landing_Altitude_Thunk);
     Patch_Jump(0x0040C8A0, &AircraftClassExt::_Receive_Message);
+    // AircraftClass vtable 0x6CADF8 + 0x21C. Original 40 D9 5B 00 -> 5BD940.
+    // ECX=Aircraft; Stack+4=message,+8=long&,+Ch=recipient; EAX=reply, ret Ch.
+    // Native basic TX at 5BDA10 already forwards through this virtual slot.
+    Change_Virtual_Address(0x006CB014, Get_Func_Address(&AircraftClassExt::_MultiDock_Transmit_Data));
 }
