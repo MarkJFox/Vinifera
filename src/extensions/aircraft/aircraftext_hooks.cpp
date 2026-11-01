@@ -355,11 +355,15 @@ RadioMessageType AircraftClassExt::_Receive_Message(RadioClass* from, RadioMessa
             // Only our mutually reserved dock may maintain an existing approach.
             // Never Commence here: it resets the approach Status to INITIAL.
             target = reinterpret_cast<AbstractClass*>(param);
-            if (from == Radio && target == Radio && from->Radio == this
-                && target->Fetch_RTTI() == RTTI_BUILDING
-                && FixedWing::Dock_Candidate(this, static_cast<BuildingClass*>(target))) {
-                TechnoClass::Receive_Message(from, message, param);
-                return RADIO_ROGER;
+            if (target != nullptr && from == Radio && target == Radio && target->Fetch_RTTI() == RTTI_BUILDING) {
+                const auto dock = static_cast<BuildingClass*>(target);
+                const auto ext = Extension::Fetch(dock);
+                const bool contact = ext->Is_Aircraft_MultiDock() ?
+                    ext->Find_Aircraft_Dock_Slot(this) >= 0 : dock->Radio == this;
+                if (contact && FixedWing::Dock_Candidate(this, dock)) {
+                    TechnoClass::Receive_Message(from, message, param);
+                    return RADIO_ROGER;
+                }
             }
             return RADIO_NEGATIVE;
         }

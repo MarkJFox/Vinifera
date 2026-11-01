@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005D3c2 enables supported FixedWing Aircraft on MultiDock helipads, with slot-specific approach/landing, mixed normal/FixedWing capacity, shared reload, CAP rearm/resume and opposite-direction fallback per reserved slot. User runtime tests confirmed these scenarios and approach save/load; save basis remains `0x190000`. See [AF-0005D3c2](AF-0005D3c2.md).
 - Aftermath AF-0005D3c1 adds normal-Aircraft helipad MultiDock (`NumberOfDocks=2..16`, Art `DockingCell0..N-1`) with reservations, production, independent reload and saved contacts. FixedWing MultiDock is excluded; count absent/1 retains Single-Dock. D3 Single-Dock also accepts `DockingCell0`; `CustomDockCell` remains the compatible legacy key. Save basis is now `0x190000`; start a new game. See [AF-0005D3c1](AF-0005D3c1.md).
 - Aftermath AF-0005D3 adds a saved optional aircraft dock cell and raises the save basis to `0x180000`. Start a new game; D2 and earlier saves are rejected. See [AF-0005D3](AF-0005D3.md).
 - Aftermath AF-0005D2 adds a saved optional infantry exit cell and raises the save basis to `0x170000`. Start a new game; earlier foundation saves, including D1, are rejected. See [AF-0005D2](AF-0005D2.md).

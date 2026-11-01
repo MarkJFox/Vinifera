@@ -19,6 +19,7 @@
 #include "buildingtype.h"
 #include "buildingtypeext.h"
 #include "extension.h"
+#include "fixedwing.h"
 #include "house.h"
 #include "housetype.h"
 #include "cell.h"
@@ -227,7 +228,8 @@ bool BuildingClassExtension::Can_Accept_Aircraft_Dock(const AircraftClass* aircr
 {
     const auto building = This_Const();
     if (!Is_Aircraft_MultiDock() || aircraft == nullptr || aircraft->RTTI != RTTI_AIRCRAFT ||
-        aircraft->Class == nullptr || Extension::Fetch(aircraft->Class)->IsFixedWing ||
+        aircraft->Class == nullptr ||
+        (Extension::Fetch(aircraft->Class)->IsFixedWing && !FixedWing::Enabled(aircraft)) ||
         aircraft->Class->IsCarryall || !aircraft->Class->Dock.Is_Present(building->Class) ||
         !building->House->Is_Ally(aircraft) || !building->IsActive || building->IsInLimbo ||
         building->Strength <= 0 || !building->IsOn || !building->Is_Powered_On() ||
@@ -563,7 +565,8 @@ bool BuildingClassExtension::Validate_Aircraft_Docks_After_Load()
             if (count == 1 || i >= count || ext->This()->Radio != nullptr || !Aircrafts.Is_Present(aircraft) ||
                 aircraft->RTTI != RTTI_AIRCRAFT ||
                 !AircraftTypes.Is_Present(aircraft->Class) ||
-                Extension::Fetch(aircraft->Class)->IsFixedWing || aircraft->Class->IsCarryall) return false;
+                (Extension::Fetch(aircraft->Class)->IsFixedWing && !FixedWing::Enabled(aircraft)) ||
+                aircraft->Class->IsCarryall) return false;
             for (int p = 0; p <= b; ++p) {
                 for (int j = 0; j < (p == b ? i : BuildingTypeClassExtension::MAX_AIRCRAFT_DOCKS); ++j) {
                     if (BuildingExtensions[p]->AircraftDockVisitors[j] == aircraft) return false;

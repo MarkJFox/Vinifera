@@ -9,6 +9,7 @@
 #include "aircrafttracker.h"
 #include "anim.h"
 #include "building.h"
+#include "buildingext.h"
 #include "buildingtype.h"
 #include "cell.h"
 #include "coord.h"
@@ -164,12 +165,35 @@ namespace
             && Valid_Segment(out.P, out.D) && !Map[out.D].IsUnderBridge;
     }
 
+    bool Dock_Contact(AircraftClass* a, BuildingClass* dock)
+    {
+        if (!dock || a->Radio != dock) return false;
+        const auto ext = Extension::Fetch(dock);
+        return ext->Is_Aircraft_MultiDock() ? ext->Find_Aircraft_Dock_Slot(a) >= 0 : dock->Radio == a;
+    }
+
+    bool Dock_Point(AircraftClass* a, BuildingClass* dock, Coord& position, bool candidate = false)
+    {
+        if (!dock) return false;
+        const auto ext = Extension::Fetch(dock);
+        if (!ext->Is_Aircraft_MultiDock()) {
+            position = dock->Docking_Coord();
+            return true;
+        }
+        if (ext->Find_Aircraft_Dock_Slot(a) >= 0) return ext->Aircraft_Dock_Coord(a, position);
+        // Prediction only, before HELLO. Never reserve from a coordinate query
+        // or replace a registered slot when a lower slot becomes free.
+        return candidate && a->Radio != dock &&
+            ext->Aircraft_Dock_Coord(ext->Find_First_Free_Aircraft_Dock_Slot(), position);
+    }
+
     bool Geometry(AircraftClass* a, BuildingClass* dock, Approach& out)
     {
-        const Coord position = dock->Docking_Coord();
+        Coord position;
+        if (!Dock_Point(a, dock, position, true)) return false;
         // Landing_Direction is an eight-way FacingType, NOT a Dir256 value.
         // In mutual contact it reads the same building facing used before HELLO.
-        const auto facing = a->Radio == dock && dock->Radio == a
+        const auto facing = Dock_Contact(a, dock)
             ? static_cast<FacingType>(a->Landing_Direction())
             : static_cast<FacingType>(dock->PrimaryFacing.Current().Get_Facing<8>());
         const DirType primary(facing);
@@ -182,24 +206,42 @@ namespace
 
     bool Dock_Exists(AircraftClass* a, BuildingClass* dock)
     {
-        if (!dock || !dock->IsActive || dock->IsInLimbo || dock->Strength <= 0
-            || dock->House != a->House || !a->Class->Dock.Is_Present(dock->Class)
+        if (!dock || !dock->IsActive || dock->IsInLimbo || dock->Strength <= 0) return false;
+        const bool multi = Extension::Fetch(dock)->Is_Aircraft_MultiDock();
+        if ((multi ? !dock->House->Is_Ally(a) : dock->House != a->House) || !a->Class->Dock.Is_Present(dock->Class)
             || dock->CurrentMission == MISSION_CONSTRUCTION
             || dock->CurrentMission == MISSION_DECONSTRUCTION || dock->BState == BSTATE_CONSTRUCTION
             || !(dock->Class->IsCanUnitReload || dock->Class->IsCanUnitRepair)) return false;
-        return Valid_Point(dock->Docking_Coord());
+        if (!multi) return Valid_Point(dock->Docking_Coord());
+        // Presence is independent of capacity, power and approach geometry.
+        const auto ext = Extension::Fetch(dock);
+        Coord position;
+        for (int i = 0; i < Extension::Fetch(dock->Class)->AircraftDockCount; ++i) {
+            if (ext->Aircraft_Dock_Coord(i, position) && Valid_Point(position)) return true;
+        }
+        return false;
     }
 
     bool Dock_Status(AircraftClass* a, BuildingClass* dock, bool reserved)
     {
-        if (!Dock_Exists(a, dock) || !dock->IsOn || (dock->Radio && dock->Radio != a)) return false;
-        const Coord position = dock->Docking_Coord();
+        if (!Dock_Exists(a, dock)) return false;
+        const auto ext = Extension::Fetch(dock);
+        Coord position;
+        if (ext->Is_Aircraft_MultiDock()) {
+            // D3c1 retains existing reservations through temporary power/EMP
+            // loss; only new acceptance and servicing are gated by power.
+            if (reserved ? !Dock_Contact(a, dock) : !ext->Can_Accept_Aircraft_Dock(a)) return false;
+            if (!Dock_Point(a, dock, position, !reserved) || !Valid_Point(position)) return false;
+        } else {
+            if (!dock->IsOn || (dock->Radio && dock->Radio != a)) return false;
+            position = dock->Docking_Coord();
+        }
         for (auto object = Map[position].Cell_Occupier(); object; object = object->Next) {
             if (object == a || object == dock || !object->IsActive || object->IsInLimbo) continue;
             const auto rtti = object->Fetch_RTTI();
             if (rtti == RTTI_AIRCRAFT || rtti == RTTI_UNIT || rtti == RTTI_INFANTRY) return false;
         }
-        return !reserved || (a->Radio == dock && dock->Radio == a);
+        return !reserved || Dock_Contact(a, dock);
     }
 
     BuildingClass* Reserved(AircraftClass* a)
@@ -295,8 +337,12 @@ namespace
         void Candidate(AircraftClass* a, BuildingClass* dock, const char* phase)
         {
             if (!dock) return;
-            const Coord d = dock->Docking_Coord();
-            const bool valid = Valid_Point(d);
+            const auto dock_ext = Extension::Fetch(dock);
+            const bool multi = dock_ext->Is_Aircraft_MultiDock();
+            const int registered_slot = multi ? dock_ext->Find_Aircraft_Dock_Slot(a) : -1;
+            const int slot = multi && registered_slot < 0 ? dock_ext->Find_First_Free_Aircraft_Dock_Slot() : registered_slot;
+            Coord d = COORD_NONE;
+            const bool valid = Dock_Point(a, dock, d, true) && Valid_Point(d);
             bool clear = true;
             bool occupancy_known = valid;
             std::string occupants;
@@ -335,27 +381,29 @@ namespace
             check("REJECT_INACTIVE", dock->IsActive);
             check("REJECT_LIMBO", !dock->IsInLimbo);
             check("REJECT_DEAD", dock->Strength > 0);
-            check("REJECT_WRONG_HOUSE", dock->House == a->House);
+            check("REJECT_WRONG_HOUSE", multi ? dock->House->Is_Ally(a) : dock->House == a->House);
             check("REJECT_NOT_IN_DOCK_LIST", a->Class->Dock.Is_Present(dock->Class));
             check("REJECT_UNFINISHED", dock->CurrentMission != MISSION_CONSTRUCTION && dock->BState != BSTATE_CONSTRUCTION);
             check("REJECT_DECONSTRUCTION", dock->CurrentMission != MISSION_DECONSTRUCTION);
             check("REJECT_NO_SERVICE", dock->Class->IsCanUnitReload || dock->Class->IsCanUnitRepair);
+            if (multi) check("REJECT_SLOT_CAPACITY", slot >= 0);
             check("REJECT_INVALID_DOCK_COORD", valid);
             check("REJECT_POWERED_OFF", dock->IsOn);
-            check("REJECT_RADIO_OCCUPIED", !dock->Radio || dock->Radio == a);
+            check("REJECT_RADIO_OCCUPIED", multi ? slot >= 0 : !dock->Radio || dock->Radio == a);
             if (occupancy_known) check("REJECT_CELL_OCCUPIED", clear);
             else checks += " REJECT_CELL_OCCUPIED=SKIP_UNRESOLVED_OR_INVALID";
             check("REJECT_APPROACH_GEOMETRY", geometry);
             // These are probes, not extra radio messages or new candidate decisions.
             checks += std::format(" REJECT_FOREIGN_RESERVATION={} nativeUnoccupied={} reservedProbe={}",
-                a->Radio == dock && dock->Radio == a ? "PASS" : "FAIL", dock->Radio == nullptr,
+                Dock_Contact(a, dock) ? "PASS" : "FAIL", dock->Radio == nullptr,
                 occupancy_known ? int(Dock_Status(a, dock, true)) : -1);
-            const std::string state = std::format("type={} house={} active={} limbo={} strength={} IsOn={} mission={} status={} BState={} QueueBState={} ready={} opened={} reload={} repair={} helipad={} BQuantity={} D=({},{},{}) Radio=[{}] aircraftRadio=[{}] cellUnderBridge={} altOccupant=[{}] firstProbe={} checks:{}",
+            const std::string state = std::format("type={} house={} active={} limbo={} strength={} IsOn={} mission={} status={} BState={} QueueBState={} ready={} opened={} reload={} repair={} helipad={} BQuantity={} multiDock={} slot={} slotSource={} D=({},{},{}) Radio=[{}] aircraftRadio=[{}] cellUnderBridge={} altOccupant=[{}] firstProbe={} checks:{}",
                 dock->Class->Name(), dock->House ? dock->House->Fetch_Heap_ID() : -1,
                 dock->IsActive, dock->IsInLimbo, dock->Strength, dock->IsOn, int(dock->CurrentMission), dock->Status,
                 int(dock->BState), int(dock->QueueBState), dock->IsReadyToCommence, dock->HasOpened,
                 dock->Class->IsCanUnitReload, dock->Class->IsCanUnitRepair, dock->Class->IsHelipad,
                 a->House->BQuantity.Value(static_cast<StructType>(dock->Class->Fetch_Heap_ID())),
+                multi, slot, registered_slot >= 0 ? "REGISTERED" : multi ? "FIRST_FREE_PROBE" : "SINGLE",
                 d.X, d.Y, d.Z, Ref(dock->Radio), Ref(a->Radio), valid && bool(Map[d].IsUnderBridge),
                 valid ? Ref(Map[d].AltOccupierPtr) : "SKIP_INVALID_COORD", reason, checks);
             std::string geometry_state = "SKIP_INVALID_DOCK_COORD";
@@ -365,7 +413,7 @@ namespace
                     : "APPROACH_PRIMARY_INVALID_FALLBACK_OPPOSITE APPROACH_OPPOSITE_INVALID";
                 geometry_state = std::format("{} primaryLandingFacing={} selectedLandingFacing={} headingRaw={} Dvalid={} S=({},{},{}) valid={} G=({},{},{}) valid={} P=({},{},{}) valid={} segments(SG,GP,PD)=({},{},{})",
                     selection,
-                    a->Radio == dock && dock->Radio == a ? int(a->Landing_Direction()) : int(dock->PrimaryFacing.Current().Get_Facing<8>()),
+                    Dock_Contact(a, dock) ? int(a->Landing_Direction()) : int(dock->PrimaryFacing.Current().Get_Facing<8>()),
                     int(approach.Direction.Get_Facing<8>()),
                     int(approach.Direction.Get_Raw()), Valid_Point(approach.D),
                     approach.S.X, approach.S.Y, approach.S.Z, Valid_Point(approach.S),
@@ -1420,7 +1468,7 @@ bool Has_Compatible_Dock(AircraftClass* a)
     // Presence deliberately ignores Radio, occupancy, power and approach reservation.
     // A completed compatible base remains a base while another aircraft uses it.
     for (int i = 0; i < Buildings.Count(); ++i) {
-        if (Dock_Exists(a, Buildings[i])) return true;
+        if (Buildings[i] && Buildings[i]->House == a->House && Dock_Exists(a, Buildings[i])) return true;
     }
     return false;
 }
@@ -1693,8 +1741,10 @@ void Assign_Destination(AircraftClass* a, const AbstractClass* target, bool upda
         return;
     }
     auto dock = Reserved(a);
+    Coord dock_position;
     if (target && target == dock && a->HeightAGL <= 0 && !fly->IsTakingOff
-        && Distance_Squared(a->PositionCoord, dock->Docking_Coord()) <= int64_t(TOUCHDOWN) * TOUCHDOWN) {
+        && Dock_Point(a, dock, dock_position)
+        && Distance_Squared(a->PositionCoord, dock_position) <= int64_t(TOUCHDOWN) * TOUCHDOWN) {
         a->NavCom = dock;
         a->Status = INITIAL;
         a->MissionClass::Timer = 0;
@@ -1730,7 +1780,10 @@ int Mission_Move(AircraftClass* a)
     a->field_370 = true;
     if (!a->NavCom) { Finish_Move(a); return 1; }
     // TSpp's name for the native virtual Destination_Coord slot.
-    Goal(fly, a->NavCom->entry_50());
+    Coord destination;
+    const auto target = a->NavCom->Fetch_RTTI() == RTTI_BUILDING ? static_cast<BuildingClass*>(a->NavCom) : nullptr;
+    if (target && Extension::Fetch(target)->Is_Aircraft_MultiDock() && Dock_Point(a, target, destination)) Goal(fly, destination);
+    else Goal(fly, a->NavCom->entry_50());
     Cruise(a, fly);
     if (a->HeightAGL <= 0 && !fly->IsTakingOff) Take_Off(fly);
     if (a->HeightAGL > 0 && Passed(a->PositionCoord, a->PositionCoord, fly->DestinationCoord, ARRIVAL)) Finish_Move(a);
@@ -1746,7 +1799,7 @@ int Mission_Enter(AircraftClass* a)
         Approach approach;
         if (dock && Geometry(a, dock, approach) && !fly->IsLanding && fly->CurrentSpeed == 0.0 && fly->TargetSpeed == 0.0
             && Heading_OK(a->PrimaryFacing.Current(), approach.Direction)
-            && Distance_Squared(a->PositionCoord, dock->Docking_Coord()) <= int64_t(TOUCHDOWN) * TOUCHDOWN) {
+            && Distance_Squared(a->PositionCoord, approach.D) <= int64_t(TOUCHDOWN) * TOUCHDOWN) {
             // IM_IN queues the existing aircraft SLEEP and building REPAIR missions.
             // Repair rejects a nonempty NavCom, including an already parked
             // INITIAL aircraft that did not pass through Process_Landing.
@@ -1897,7 +1950,9 @@ bool Process(FlyLocomotionClass* fly, AircraftClass* a)
             && Distance_Squared(from, approach.D) <= int64_t(speed + TOUCHDOWN) * (speed + TOUCHDOWN)
             && Heading_OK(a->PrimaryFacing.Current(), landing) && to.Z <= approach.D.Z + CLIMB
             && a->PitchAngle <= 0 && Dock_Status(a, dock, true)
-            && a->Can_Enter_Cell(&Map[approach.D]) == MOVE_OK && a->Is_LZ_Clear(dock)) {
+            && a->Can_Enter_Cell(&Map[approach.D]) == MOVE_OK
+            && a->Is_LZ_Clear(Extension::Fetch(dock)->Is_Aircraft_MultiDock() ?
+                static_cast<AbstractClass*>(&Map[approach.D]) : static_cast<AbstractClass*>(dock))) {
             // Only the final movement segment may terminate at the dock coordinate.
             to = approach.D;
             touchdown = true;
@@ -1911,8 +1966,9 @@ bool Process(FlyLocomotionClass* fly, AircraftClass* a)
     }
     if (!final) {
         int desired = ground + a->Class->Flight_Level();
-        if (a->CurrentMission == MISSION_ENTER && a->Status >= DOWNWIND && dock) {
-            desired = std::max(desired, dock->Docking_Coord().Z + a->Class->Flight_Level());
+        Coord dock_position;
+        if (a->CurrentMission == MISSION_ENTER && a->Status >= DOWNWIND && dock && Dock_Point(a, dock, dock_position)) {
+            desired = std::max(desired, dock_position.Z + a->Class->Flight_Level());
         }
         to.Z = from.Z + std::clamp(desired - from.Z, -CLIMB, CLIMB);
     }
@@ -1928,6 +1984,11 @@ bool Process(FlyLocomotionClass* fly, AircraftClass* a)
     if (touchdown) {
         // All native failure/random-LZ branches have already been ruled out above.
         Process_Landing(fly);
+        if (Vinifera_DeveloperMode && Extension::Fetch(dock)->Is_Aircraft_MultiDock()) {
+            DEBUG_INFO("[FWDOCK] frame={} event=LANDING_SLOT a={} dock={} slot={} dockCoord=({},{},{})\n",
+                Frame, a->ID, dock->ID, Extension::Fetch(dock)->Find_Aircraft_Dock_Slot(a),
+                approach.D.X, approach.D.Y, approach.D.Z);
+        }
     } else if (fly->IsTakingOff) Process_Takeoff(fly);
     if (old_layer != a->In_Which_Layer()) {
         if (a->In_Which_Layer() == LAYER_GROUND) {

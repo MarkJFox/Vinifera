@@ -271,8 +271,9 @@ DEFINE_HOOK(0x0042C6A1, _Building_Exit_Aircraft_MultiDock_Capacity, 5)
     const auto ext = Extension::Fetch(building);
     if (!ext->Is_Aircraft_MultiDock()) return 0;
     GET(AircraftClass*, aircraft, EDI);
-    // FixedWing cannot enter the pad branch, including its ion-storm exception.
-    if (Extension::Fetch(aircraft->Class)->IsFixedWing || aircraft->Class->IsCarryall) return 0x0042C6B9;
+    // Only supported FixedWing may share the normal MultiDock production path.
+    if ((Extension::Fetch(aircraft->Class)->IsFixedWing && !FixedWing::Enabled(aircraft)) ||
+        aircraft->Class->IsCarryall) return 0x0042C6B9;
     return ext->Can_Accept_Aircraft_Dock(aircraft, true) ? 0x0042C8EA : 0x0042C6AC;
 }
 

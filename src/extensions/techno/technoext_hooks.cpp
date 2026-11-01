@@ -3715,7 +3715,9 @@ DEFINE_HOOK(0x00637F0B, _TechnoClass_Find_Docking_Bay_Unoccupied_Aircraft_Patch,
         if (!Vinifera_PerformingLoad && dock_ext->Is_Aircraft_MultiDock()) {
             // Same TS candidate order/CAN_LOAD/distance ranking. Bypass only
             // the native Radio!=null gate and its already-installed FW trace.
-            return dock_ext->Can_Accept_Aircraft_Dock(aircraft) ? 0x00637F1E : 0x00638013;
+            const bool accepted = dock_ext->Can_Accept_Aircraft_Dock(aircraft) &&
+                (!FixedWing::Enabled(aircraft) || FixedWing::Dock_Candidate(aircraft, candidate));
+            return accepted ? 0x00637F1E : 0x00638013;
         }
         if (FixedWing::Enabled(aircraft) && !FixedWing::Dock_Candidate(aircraft, candidate)) return 0x00638013;
     }
