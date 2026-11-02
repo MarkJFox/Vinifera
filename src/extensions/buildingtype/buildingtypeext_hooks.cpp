@@ -335,6 +335,16 @@ DEFINE_HOOK(0x0043FDBF, _BuildingTypeClass_Init_Fetch_Image_Patch, 0)
 }
 
 
+// Load's NoInit bases already cleared Image; demand loading must allocate its
+// own buffer through Get_Image_Data instead of borrowing one from the MIX cache.
+static void __fastcall _BuildingTypeClass_Load_Fetch_Normal_Image_Intercept(BuildingTypeClass* type, void*)
+{
+    if (!type->IsDemandLoad) {
+        type->ObjectTypeClass::Fetch_Normal_Image();
+    }
+}
+
+
 /**
  *  Main function for patching the hooks.
  */
@@ -344,6 +354,9 @@ void BuildingTypeClassExtension_Hooks()
      *  Initialises the extended class.
      */
     BuildingTypeClassExtension_Init();
+
+    // Native E8 5B 54 14 00 -> 005888B0: __thiscall, ECX=this, no stack arguments.
+    Patch_Call(0x00443450, &_BuildingTypeClass_Load_Fetch_Normal_Image_Intercept);
 
     Patch_Jump(0x00443CF0, &BuildingTypeClassExt::_Free_Buildup_Image);
     Patch_Jump(0x00443D20, &BuildingTypeClassExt::_Set_Base_Defense_Values);

@@ -64,6 +64,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ## Changelog
 
+### Aftermath save-game loading
+
+- Fix repeated save-game loading crashing because BuildingType demand-loaded images retained borrowed MIX pointers after deserialization.
+
 ### Aftermath AF-0005D3
 
 - Add custom foundations for single-aircraft helipads using the combined `Factory=AircraftType`, `Helipad=yes`, `UnitReload=yes` contract. Optional ArtINI `CustomDockCell=X,Y` selects one occupied internal service cell; absent or invalid values require an occupied native center. Normal aircraft and FixedWing use the custom dock point. Locally built and core-runtime-confirmed by the user, including reload, save/load and production/service after load; see [AF-0005D3](AF-0005D3.md) for remaining regression cases.
