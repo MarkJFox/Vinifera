@@ -121,6 +121,14 @@ There are no internal guards against recursive inheritance. If Section A inherit
 Section-level does not work in certain cases that *iterate* a section. Notably, it may not be used with type lists, `[Tutorial]`, map briefings, as well as with map object lists.
 ```
 
+## Savegame loading
+
+The classic singleplayer Load Game dialog accepts version-compatible saves from other playthroughs, including autosaves. The dialog's `MODE_LOAD` state selects `ManualSingleplayerLoad`; its native availability probe (`MODE_NONE`) uses the same policy when reading headers. Save names and descriptions do not select the policy. The loader adopts the saved playthrough ID at its existing restore point.
+
+The singleplayer Save Game dialog (`MODE_SAVE`) uses `ManualSingleplayerSaveDialog` to list compatible saves from other playthroughs for overwriting. The write path is unchanged and writes the current playthrough ID.
+
+The existing session rule still excludes campaign saves during a running skirmish. Campaign-to-campaign, skirmish-to-skirmish and campaign-to-skirmish loads can cross playthroughs. Multiplayer reloads and desync recovery retain `CurrentSession` checks, and spawner direct loading is unchanged. TS/Vinifera version checks and the save format are unchanged.
+
 ## Spawner
 
 - Vinifera implements its own spawner, capable of starting a new singleplayer, skirmish or multiplayer game, as well as loading saved games.

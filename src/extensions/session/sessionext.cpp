@@ -426,7 +426,7 @@ bool SessionClassExtension::Load_Multiplayer_Save(int slot)
     }
 
     ViniferaSaveVersionInfo save_info;
-    if (!Vinifera_Is_Save_Loadable(fullpath.string(), &save_info)) {
+    if (!Vinifera_Is_Save_Loadable(fullpath.string(), SaveLoadContext::CurrentSession, &save_info)) {
         DEBUG_ERROR("SessionClassExtension::Load_Multiplayer_Save: Save slot {} is invalid or incompatible.\n", slot);
         return false;
     }

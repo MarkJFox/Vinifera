@@ -1040,7 +1040,7 @@ bool Vinifera_Save_Game(const char* file_name, const char* descr, bool)
  *
  *  @author: ZivDero
  */
-bool Vinifera_Load_Game(const char* file_name)
+static bool Vinifera_Load_Game_With_Context(const char* file_name, SaveLoadContext context)
 {
     WCHAR wide_file_name[PATH_MAX];
     char formatted_file_name[PATH_MAX];
@@ -1054,7 +1054,7 @@ bool Vinifera_Load_Game(const char* file_name)
 
     DEBUG_INFO("LOADING GAME [{}]\n", formatted_file_name);
 
-    if (!Vinifera_Is_Save_Loadable(formatted_file_name)) {
+    if (!Vinifera_Is_Save_Loadable(formatted_file_name, context)) {
         DEBUG_ERROR("LOAD GAME [{}] - incompatible or invalid save file.\n", formatted_file_name);
         return false;
     }
@@ -1163,6 +1163,15 @@ bool Vinifera_Load_Game(const char* file_name)
 
 
 /**
+ *  Native Load_Game entry point. Non-dialog callers keep the session policy.
+ */
+bool Vinifera_Load_Game(const char* file_name)
+{
+    return Vinifera_Load_Game_With_Context(file_name, SaveLoadContext::CurrentSession);
+}
+
+
+/**
  *  A fake class for implementing new member functions which allow
  *  access to the "this" pointer of the intended class.
  *
@@ -1189,9 +1198,11 @@ public:
 bool LoadOptionsClassExt::_Load_File(const char* filename)
 {
     char formatted_file_name[PATH_MAX];
+    const SaveLoadContext context = Style == MODE_LOAD && Session.Singleplayer_Game()
+        ? SaveLoadContext::ManualSingleplayerLoad : SaveLoadContext::CurrentSession;
 
     _makepath(formatted_file_name, nullptr, Vinifera_SavedGamesDirectory.c_str(), Filename_From_Path(filename), nullptr);
-    if (!Vinifera_Is_Save_Loadable(formatted_file_name)) {
+    if (!Vinifera_Is_Save_Loadable(formatted_file_name, context)) {
         return false;
     }
 
@@ -1203,7 +1214,11 @@ bool LoadOptionsClassExt::_Load_File(const char* filename)
     ScenarioActive = false;
     TacticalActive = false;
 
-    const bool result = Load_Game(formatted_file_name);
+    // Pass the dialog context through both checks without a global override.
+    // Spawner and multiplayer callers retain the native Load_Game entry point.
+    const bool result = context == SaveLoadContext::ManualSingleplayerLoad
+        ? Vinifera_Load_Game_With_Context(formatted_file_name, context)
+        : Load_Game(formatted_file_name);
 
     if (handle) {
         WinDialogClass::End_Dialog(handle);
@@ -1255,10 +1270,11 @@ bool LoadOptionsClassExt::_Delete_File(const char* filename)
 
 
 /**
- *  Checks whether the given save file can be loaded by the current game:
- *  the game and Vinifera versions must match, and, when in-game, the save
- *  must belong to the current playthrough and not be a campaign save while
- *  we're not in campaign (to facilitate the client's playthrough tracking).
+ *  Checks technical compatibility and the caller's load policy. Versions
+ *  must always match. The manual singleplayer dialog contexts permit another
+ *  playthrough, but only for singleplayer sessions and saves. Other callers
+ *  retain the in-game playthrough restriction for client session tracking.
+ *  The existing campaign/non-campaign restriction applies in all contexts.
  *
  *  This is the single place that decides whether a save is loadable; the
  *  load dialog and the desync dialog both rely on it. Optionally returns
@@ -1266,7 +1282,7 @@ bool LoadOptionsClassExt::_Delete_File(const char* filename)
  *
  *  @author: ZivDero
  */
-bool Vinifera_Is_Save_Loadable(std::string_view path, ViniferaSaveVersionInfo* info_out)
+bool Vinifera_Is_Save_Loadable(std::string_view path, SaveLoadContext context, ViniferaSaveVersionInfo* info_out)
 {
     ViniferaSaveVersionInfo saveversion;
     if (!Vinifera_Get_Savefile_Info(path, saveversion)) {
@@ -1286,9 +1302,18 @@ bool Vinifera_Is_Save_Loadable(std::string_view path, ViniferaSaveVersionInfo* i
         return false;
     }
 
+    const bool singleplayer_dialog = context == SaveLoadContext::ManualSingleplayerLoad ||
+        context == SaveLoadContext::ManualSingleplayerSaveDialog;
+    if (singleplayer_dialog) {
+        const GameEnum saved_type = static_cast<GameEnum>(saveversion.Get_Game_Type());
+        if (!Session.Singleplayer_Game() || (saved_type != GAME_NORMAL && saved_type != GAME_SKIRMISH)) {
+            return false;
+        }
+    }
+
     if (ScenarioActive) {
 
-        if (saveversion.Get_Playthrough_ID() != Vinifera_PlaythroughID) {
+        if (!singleplayer_dialog && saveversion.Get_Playthrough_ID() != Vinifera_PlaythroughID) {
             DEBUG_INFO("Save file \"{}\" belongs to a different playthrough, skipping.\n", path);
             return false;
         }
@@ -1323,8 +1348,19 @@ bool LoadOptionsClassExt::_Read_File(FileEntryClass* file, WIN32_FIND_DATA* file
 
     const std::string formatted_file_name = (std::filesystem::path(Vinifera_SavedGamesDirectory) / Filename_From_Path(filename->cFileName)).string();
 
+    // MODE_NONE is used by the native Read_Save_Files availability probe
+    // before the Load Game dialog opens. Delete dialogs keep their policy.
+    SaveLoadContext context = SaveLoadContext::CurrentSession;
+    if (Session.Singleplayer_Game()) {
+        if (Style == MODE_SAVE) {
+            context = SaveLoadContext::ManualSingleplayerSaveDialog;
+        } else if (Style == MODE_LOAD || Style == MODE_NONE) {
+            context = SaveLoadContext::ManualSingleplayerLoad;
+        }
+    }
+
     ViniferaSaveVersionInfo saveversion;
-    if (!Vinifera_Is_Save_Loadable(formatted_file_name, &saveversion)) {
+    if (!Vinifera_Is_Save_Loadable(formatted_file_name, context, &saveversion)) {
         return false;
     }
 

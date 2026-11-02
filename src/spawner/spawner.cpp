@@ -556,7 +556,7 @@ bool Spawner::Load_Game(const char* file_name)
     _makepath(formatted_file_name, nullptr, Vinifera_SavedGamesDirectory.c_str(), Filename_From_Path(file_name), nullptr);
 
     ViniferaSaveVersionInfo save_info;
-    if (strlen(file_name) == 0 || !Vinifera_Is_Save_Loadable(formatted_file_name, &save_info)) {
+    if (strlen(file_name) == 0 || !Vinifera_Is_Save_Loadable(formatted_file_name, SaveLoadContext::CurrentSession, &save_info)) {
         DEBUG_INFO("[Spawner] Failed to validate savegame [{}]\n", file_name);
         MessageBox(MainWindow, Text_String(TXT_ERROR_LOADING_GAME), "Vinifera", MB_OK);
         return false;

@@ -916,7 +916,7 @@ bool DesyncDialogClass::Any_Multiplayer_Save_Exists()
                 continue;
             }
 
-            if (Vinifera_Is_Save_Loadable(entry.path().string())) {
+            if (Vinifera_Is_Save_Loadable(entry.path().string(), SaveLoadContext::CurrentSession)) {
                 return true;
             }
         }
