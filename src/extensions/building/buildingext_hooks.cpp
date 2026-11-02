@@ -141,7 +141,15 @@ DEFINE_HOOK(0x00434140, _BuildingClass_Find_Exit_Cell_Custom_Foundation_Infantry
     if (Vinifera_PerformingLoad) return 0;
     GET(BuildingClass*, building, ECX);
     const auto ext = Extension::Fetch(building->Class);
-    if (ext == nullptr || !ext->Is_Custom_Foundation_Infantry_Factory_Eligible()) return 0;
+    if (ext == nullptr) return 0;
+    if (ext->Is_Custom_Foundation_Unit_Repair_Eligible()) {
+        GET_STACK(Cell*, result, 0x4);
+        GET_STACK(const TechnoClass*, visitor, 0x8);
+        *result = Extension::Fetch(building)->Custom_Unit_Repair_Exit(visitor);
+        R->EAX(result);
+        return 0x004342EB; // bare ret 8; no native prologue has run.
+    }
+    if (!ext->Is_Custom_Foundation_Infantry_Factory_Eligible()) return 0;
 
     GET_STACK(Cell*, result, 0x4);
     GET_STACK(const TechnoClass*, product, 0x8);
@@ -329,7 +337,119 @@ DEFINE_HOOK(0x004A4AD9, _Foot_Destination_Aircraft_MultiDock, 5)
     GET(FootClass*, foot, EBP);
     GET(Coord*, result, EAX);
     MultiDock_Destination(foot, foot->NavCom, *result);
+    Coord point;
+    if (BuildingClassExtension::Custom_Unit_Repair_Nav_Coord(foot, point)) *result = point;
     return 0;
+}
+
+// D4b: only local Ground Repair consumers. No Center_Coord/Docking_Coord patch.
+// Each custom path skips the complete native hidden-result call, including its
+// argument push; fallbacks return 0 and replay the original instructions.
+
+// 8D 44 24 2C / 50 (5). EBP=Unit, EBX=contact; native Cell equality,
+// NavCom identity, IM_IN and Power_Off are still executed after the coordinate.
+DEFINE_HOOK(0x00651356, _Unit_PCP_Custom_Repair_Point, 5)
+{
+    GET(UnitClass*, unit, EBP);
+    GET(RadioClass*, peer, EBX);
+    if (Vinifera_PerformingLoad || !peer || peer->RTTI != RTTI_BUILDING || peer->Radio != unit || unit->Radio != peer) return 0;
+    Coord point;
+    if (!Extension::Fetch(static_cast<BuildingClass*>(peer))->Custom_Unit_Repair_Coord(point, unit)) return 0;
+    REF_STACK(Coord, result, 0x2C);
+    result = point;
+    R->EAX(&result);
+    return 0x00651360;
+}
+
+// 8B 06 / 51 / 8B CE (5). ESI=Building, ECX=Coord* (ESP+28h).
+DEFINE_HOOK(0x004302DF, _Building_Guard_Custom_Repair_Point, 5)
+{
+    GET(BuildingClass*, building, ESI);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    GET(Coord*, result, ECX);
+    *result = point;
+    R->EAX(result);
+    return 0x004302E7;
+}
+
+// 51 / 8B CD / FF 50 4C (6). EBP=Building, ECX=Coord* (ESP+3Ch).
+DEFINE_HOOK(0x00432446, _Building_Repair_Initial_Custom_Point, 6)
+{
+    GET(BuildingClass*, building, EBP);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    GET(Coord*, result, ECX);
+    *result = point;
+    R->EAX(result);
+    return 0x0043244C;
+}
+
+// 8D 44 24 3C / 8B CD (6). EBP=Building. Keep native <150 and power policy.
+DEFINE_HOOK(0x00431F26, _Building_Repair_Idle_Custom_Point, 6)
+{
+    GET(BuildingClass*, building, EBP);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    REF_STACK(Coord, result, 0x3C);
+    result = point;
+    R->EAX(&result);
+    return 0x00431F30;
+}
+
+// FF 52 4C / 8B 16 (5). Unlike the other sites, the hidden-result
+// argument is ALREADY on the stack. Emulate the call's ret 4 AND mov edx,[esi].
+DEFINE_HOOK(0x004A5280, _Foot_Can_Demolish_Custom_Repair_Point, 5)
+{
+    GET(BuildingClass*, building, ECX);
+    GET(TechnoClass*, visitor, ESI);
+    Coord point;
+    if (building->Radio != visitor || !Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    GET_STACK(Coord*, result, 0x0);
+    *result = point;
+    R->EAX(result);
+    R->ESP(R->ESP() + 4);
+    R->EDX(*R->ESI<DWORD*>()); // Exact displaced native vtable load, not a visitor cast.
+    return 0x004A5285;
+}
+
+// 8B 06 / 51 / 8B CE (5). ESI=Building, ECX=Coord* (ESP+90h).
+DEFINE_HOOK(0x00431025, _Building_Sell_Custom_Repair_Point, 5)
+{
+    GET(BuildingClass*, building, ESI);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    GET(Coord*, result, ECX);
+    *result = point;
+    R->EAX(result);
+    return 0x0043102D;
+}
+
+// 8D 44 24 38 / 50 (5). ESI=Building, EBX=customer; only the dockpoint side
+// of the native capture distance is changed, not ownership/run-away policy.
+DEFINE_HOOK(0x0042F820, _Building_Capture_Custom_Repair_Point, 5)
+{
+    GET(BuildingClass*, building, ESI);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Contact_Coord(point)) return 0;
+    REF_STACK(Coord, result, 0x38);
+    result = point;
+    R->EAX(&result);
+    return 0x0042F82D;
+}
+
+// 8D 44 24 24 / 50 (5). ESI=searcher, EDI=candidate, no reservation yet.
+// Adapt the zone endpoint only; ranking at 637FF2 and its policies stay native.
+DEFINE_HOOK(0x00637F30, _Techno_Find_Dock_Custom_Repair_Zone, 5)
+{
+    GET(TechnoClass*, visitor, ESI);
+    GET(BuildingClass*, building, EDI);
+    Coord point;
+    if (!Extension::Fetch(building)->Custom_Unit_Repair_Coord(point, visitor)) return 0;
+    REF_STACK(Coord, result, 0x24);
+    result = point;
+    R->EAX(&result);
+    return 0x00637F3A;
 }
 
 // Original 8B 38 / 8B 48 04 (5). ESI=&Fly owner, Stack[20h]=Building*,
@@ -2430,6 +2550,19 @@ void BuildingClassExt::_Swizzle_Light_Source()
  */
 RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessageType message, long& param)
 {
+    if (!Vinifera_PerformingLoad && Extension::Fetch(Class)->Is_Custom_Foundation_Unit_Repair_Eligible()) {
+        const bool entry = message == RADIO_CAN_LOAD || message == RADIO_HELLO ||
+            message == RADIO_DOCKING || message == RADIO_IM_IN;
+        // Preserve the native CY's construction HELLO, not a second service
+        // visitor. Unsupported Aircraft/locomotors never acquire a repair link.
+        const bool construction_hello = message == RADIO_HELLO && from && from->RTTI == RTTI_BUILDING &&
+            static_cast<BuildingClass*>(from)->Class->IsConstructionYard && (!Radio || Radio == from);
+        Coord point;
+        if (entry && !construction_hello &&
+            (!from || from->RTTI != RTTI_UNIT ||
+             !Extension::Fetch(this)->Custom_Unit_Repair_Coord(point, static_cast<UnitClass*>(from)))) return RADIO_NEGATIVE;
+        if (message == RADIO_IM_IN && (Radio != from || from->Radio != this)) return RADIO_NEGATIVE;
+    }
     if (!Vinifera_PerformingLoad) {
         auto dock_ext = Extension::Fetch(this);
         if (dock_ext != nullptr && dock_ext->Is_Aircraft_MultiDock()) {
@@ -2525,6 +2658,12 @@ RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessa
             return RADIO_NEGATIVE;
         }
         if (Class->IsCanUnitRepair || Class->IsCanUnitReload || Class->IsHospital || Class->IsArmory) {
+            Coord repair_point;
+            if (Vinifera_DeveloperMode && !Vinifera_PerformingLoad &&
+                Radio == from && Extension::Fetch(this)->Custom_Unit_Repair_Contact_Coord(repair_point)) {
+                const auto cell = repair_point.As_Cell();
+                DEBUG_INFO("[GREPAIR] building={} unit={} event=IM_IN serviceCell=({}, {})\n", ID, from->ID, cell.X, cell.Y);
+            }
             if (!Vinifera_PerformingLoad && Vinifera_DeveloperMode && from->RTTI == RTTI_AIRCRAFT) {
                 const auto ext = Extension::Fetch(Class);
                 if (ext != nullptr && ext->Is_Custom_Foundation_Aircraft_Helipad_Eligible()) {
@@ -2635,7 +2774,10 @@ RadioMessageType BuildingClassExt::_Receive_Message(RadioClass* from, RadioMessa
 
         if (Contact_With_Whom() != nullptr) {
             if (Class->IsCanUnitRepair) {
-                if (Distance_To(Contact_With_Whom()) > CELL_LEPTON / 2) {
+                Coord point;
+                const int distance = Extension::Fetch(this)->Custom_Unit_Repair_Contact_Coord(point) ?
+                    point.Distance_To(Contact_With_Whom()->Center_Coord()) : Distance_To(Contact_With_Whom());
+                if (distance > CELL_LEPTON / 2) {
                     needs_to_move = true;
                 }
             }

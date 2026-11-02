@@ -133,7 +133,9 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     CustomInfantryExitCell(0, 0),
     CustomAircraftDockCellSet(false),
     CustomAircraftDockCell(0, 0),
-    AircraftDockCount(1)
+    AircraftDockCount(1),
+    CustomUnitRepairCellSet(false),
+    CustomUnitRepairCell(0, 0)
 {
     std::fill(std::begin(AircraftDockCells), std::end(AircraftDockCells), Cell(0, 0));
     Reset_Custom_Foundation();
@@ -248,6 +250,22 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
         }
     }
     if (!CustomAircraftDockCellSet) CustomAircraftDockCell = Cell(0, 0);
+    // ThisPtr/role flags are not safe until swizzling. Fail closed on owned
+    // D4b POD rather than leaving a large repair mask with a center fallback.
+    if (CustomUnitRepairCellSet) {
+        if (IsCustomFoundationEnabled) {
+            if (!IsCustomFoundationValid ||
+                Custom_Unit_Repair_Cell_Error(CustomUnitRepairCell.X, CustomUnitRepairCell.Y) != nullptr ||
+                !Unit_Repair_Mask_Connected()) return E_FAIL;
+        } else if (CustomUnitRepairCell.X < 0 || CustomUnitRepairCell.Y < 0 ||
+            CustomUnitRepairCell.X >= CustomFoundationMaxWidth || CustomUnitRepairCell.Y >= CustomFoundationMaxHeight) {
+            // Native Size/OccupyList require a swizzled owner. Check the real
+            // mask in Validate_Custom_Unit_Repairs_After_Load, not here.
+            return E_FAIL;
+        }
+    } else if (CustomUnitRepairCell != Cell(0, 0)) {
+        return E_FAIL;
+    }
     std::fill(CustomFoundationCells + FoundationCellCount, std::end(CustomFoundationCells), REFRESH_EOL);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
@@ -377,6 +395,8 @@ void BuildingTypeClassExtension::Reset_Custom_Foundation()
     CustomAircraftDockCellSet = false;
     CustomAircraftDockCell = Cell(0, 0);
     std::fill(std::begin(CustomFoundationCells), std::end(CustomFoundationCells), REFRESH_EOL);
+    CustomUnitRepairCellSet = false;
+    CustomUnitRepairCell = Cell(0, 0);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
 }
@@ -553,6 +573,140 @@ bool BuildingTypeClassExtension::Has_Custom_Foundation_Cell(int x, int y) const
     return false;
 }
 
+const char* BuildingTypeClassExtension::Custom_Unit_Repair_Cell_Error(int x, int y) const
+{
+    if (IsCustomFoundationEnabled) {
+        if (x < 0 || x >= FoundationWidth || y < 0 || y >= FoundationHeight) return "OUT_OF_RANGE";
+        return Has_Custom_Foundation_Cell(x, y) ? nullptr : "NOT_OCCUPIED";
+    }
+    const auto type = This_Const();
+    if (type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT ||
+        x < 0 || x >= type->Width() || y < 0 || y >= type->Height()) return "OUT_OF_RANGE";
+    const Cell* mask = type->Occupy_List(false);
+    if (mask != nullptr) {
+        // Native OccupyList uses the 24-Cell BuildingOccupyLists row (or the
+        // empty EOL list). Do not invent a rectangular width*height mask.
+        const int capacity = static_cast<int>(std::size(BuildingOccupyLists[0]));
+        for (int i = 0; i < capacity && mask[i] != REFRESH_EOL; ++i) {
+            if (mask[i].X == x && mask[i].Y == y) return nullptr;
+        }
+    }
+    return "NOT_OCCUPIED";
+}
+
+bool BuildingTypeClassExtension::Unit_Repair_Mask_Connected() const
+{
+    if (FoundationCellCount < 1 || FoundationCellCount > CustomFoundationMaxCells) return false;
+    bool reached[CustomFoundationMaxCells] = {};
+    int pending[CustomFoundationMaxCells];
+    int count = 1;
+    pending[0] = 0;
+    reached[0] = true;
+    for (int next = 0; next < count; ++next) {
+        const Cell cell = CustomFoundationCells[pending[next]];
+        for (int i = 0; i < FoundationCellCount; ++i) {
+            if (!reached[i] && std::abs(int(cell.X) - CustomFoundationCells[i].X) +
+                std::abs(int(cell.Y) - CustomFoundationCells[i].Y) == 1) {
+                reached[i] = true;
+                pending[count++] = i;
+            }
+        }
+    }
+    return count == FoundationCellCount;
+}
+
+const char* BuildingTypeClassExtension::Custom_Unit_Repair_Role_Error() const
+{
+    const auto type = This_Const();
+    if (!type->IsCanUnitRepair || type->ToBuild != RTTI_NONE ||
+        type->IsHelipad || type->IsHoverPad || type->IsRefinery || type->IsWeeder ||
+        type->IsDockUnload || type->IsWeaponsFactory || type->IsConstructionYard ||
+        type->IsHospital || type->IsArmory || type->FreeUnit != nullptr ||
+        type->Dock.Count() != 0 || AircraftDockCount != 1 || type->IsGDIBarracks ||
+        type->IsNODBarracks || type->IsBibbed ||
+        type->IsWall || type->IsGate || type->IsLaserFencePost || type->IsLaserFence ||
+        type->IsFirestormWall || type->IsPlug || !type->PowersUpBuilding.empty() ||
+        type->Upgrades != 0 || type->ToTile != nullptr || type->ToOverlay != nullptr ||
+        type->DeploysInto != nullptr || type->UndeploysInto != nullptr ||
+        type->IsTickTank || type->IsArtillary || type->IsJuggernaut || type->IsICBMLauncher ||
+        type->IsMobileWar || type->IsMobileStealth || type->IsCoreDefender || type->IsLimpetMine ||
+        !type->IsFootprint || type->IsCanPlaceAnywhere || type->IsBridgeRepairHut ||
+        type->IsInvisibleInGame || IsNaval ||
+        type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT ||
+        Has_Foundation_Service_Reference(BuildingTypes, type) ||
+        Has_Foundation_Service_Reference(UnitTypes, type) ||
+        Has_Foundation_Service_Reference(InfantryTypes, type) ||
+        Has_Foundation_Service_Reference(AircraftTypes, type)) return "ROLE_CONFLICT";
+    return nullptr;
+}
+
+bool BuildingTypeClassExtension::Read_Custom_Unit_Repair_Cell()
+{
+    const char* section = This_Const()->GraphicName.c_str();
+    const char* reason = Custom_Unit_Repair_Role_Error();
+    const char* validator = reason != nullptr ? "GROUND_ROLE" : "UNIT_REPAIR_CELL";
+    if (reason == nullptr && IsCustomFoundationEnabled && !Unit_Repair_Mask_Connected()) {
+        validator = "MASK_CONNECTIVITY";
+        reason = "DISCONNECTED_MASK";
+    }
+    char buffer[128] = {};
+    const int length = ArtINI.Get_String(section, "UnitRepairCell", "", buffer, sizeof(buffer));
+    int x = 0;
+    int y = 0;
+    if (reason == nullptr) {
+        const char* cursor = buffer;
+        bool parsed = length > 0 && length < static_cast<int>(sizeof(buffer)) - 1 &&
+            Read_Foundation_Integer(cursor, x) && *cursor == ',';
+        if (parsed) {
+            ++cursor;
+            parsed = Read_Foundation_Integer(cursor, y) && *cursor == '\0';
+        }
+        reason = parsed ? Custom_Unit_Repair_Cell_Error(x, y) : "MALFORMED_CELL";
+    }
+    if (reason != nullptr) {
+        if (Vinifera_DeveloperMode) {
+            const auto type = This_Const();
+            DEBUG_WARNING("[GREPAIR] type={} section={} event={} foundationMode={} validator={} reason={} value={} UnitRepair={} UnitReload={} BibShape={} IsBibbed={} nativeSize={}\n",
+                Name(), section, IsCustomFoundationEnabled ? "CONFIG_REJECTED" : "CONFIG_IGNORED",
+                IsCustomFoundationEnabled ? "CUSTOM" : "NATIVE", validator, reason, buffer, type->IsCanUnitRepair, type->IsCanUnitReload,
+                type->BibShape != nullptr, type->IsBibbed, static_cast<int>(type->Size));
+        }
+        return false;
+    }
+    CustomUnitRepairCell = Cell(static_cast<short>(x), static_cast<short>(y));
+    CustomUnitRepairCellSet = true;
+    return true;
+}
+
+bool BuildingTypeClassExtension::Is_Unit_Repair_Cell_Eligible() const
+{
+    // Complete role/mask/reverse-reference validation is owned by finalization
+    // and the post-swizzle type audit, never repeated inside a driving tick.
+    return (!IsCustomFoundationEnabled || IsCustomFoundationValid) && CustomUnitRepairCellSet &&
+        This_Const()->IsCanUnitRepair && This_Const()->ToBuild == RTTI_NONE;
+}
+
+bool BuildingTypeClassExtension::Is_Custom_Foundation_Unit_Repair_Eligible() const
+{
+    return IsCustomFoundationEnabled && IsCustomFoundationValid && Is_Unit_Repair_Cell_Eligible();
+}
+
+bool BuildingTypeClassExtension::Validate_Custom_Unit_Repairs_After_Load()
+{
+    for (int i = 0; i < BuildingTypeExtensions.Count(); ++i) {
+        const auto ext = BuildingTypeExtensions[i];
+        if (!BuildingTypes.Is_Present(ext->This())) return false;
+        if (ext->CustomUnitRepairCellSet || (ext->IsCustomFoundationValid && ext->This()->IsCanUnitRepair)) {
+            if (!ext->Is_Unit_Repair_Cell_Eligible() ||
+                ext->Custom_Unit_Repair_Role_Error() != nullptr ||
+                (ext->IsCustomFoundationEnabled && !ext->Validate_Custom_Foundation_Cells()) ||
+                ext->Custom_Unit_Repair_Cell_Error(ext->CustomUnitRepairCell.X, ext->CustomUnitRepairCell.Y) != nullptr ||
+                (ext->IsCustomFoundationEnabled && !ext->Unit_Repair_Mask_Connected())) return false;
+        }
+    }
+    return true;
+}
+
 const char* BuildingTypeClassExtension::Custom_Aircraft_Dock_Cell_Error(int x, int y) const
 {
     if (x < 0 || x >= FoundationWidth || y < 0 || y >= FoundationHeight) return "OUT_OF_RANGE";
@@ -639,12 +793,46 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
 {
     if (Vinifera_PerformingLoad) return;
     Read_Custom_Foundation();
-    if (!IsCustomFoundationEnabled || FoundationCellCount == 0) return;
     const BuildingTypeClass* type = This_Const();
+    const bool repair_cell_present = ArtINI.Is_Present(type->GraphicName.c_str(), "UnitRepairCell");
+    const bool repair_request = type->IsCanUnitRepair || repair_cell_present;
+    if (Vinifera_DeveloperMode && repair_request && (IsCustomFoundationEnabled || repair_cell_present)) {
+        DEBUG_INFO("[GREPAIR] type={} section={} event=CONFIG_REQUEST foundationMode={} customFoundation={} customWidth={} customHeight={} customOccupied={} UnitRepair={} UnitReload={} BibShape={} IsBibbed={} cellKey={} cellSet={} UnitRepairCell={} nativeSize={}\n",
+            Name(), type->GraphicName.c_str(), IsCustomFoundationEnabled ? "CUSTOM" : "NATIVE", IsCustomFoundationEnabled, FoundationWidth, FoundationHeight,
+            FoundationCellCount, type->IsCanUnitRepair, type->IsCanUnitReload, type->BibShape != nullptr, type->IsBibbed,
+            repair_cell_present, CustomUnitRepairCellSet,
+            ArtINI.Get_String(type->GraphicName.c_str(), "UnitRepairCell", std::string()), static_cast<int>(type->Size));
+    }
+    if (!IsCustomFoundationEnabled) {
+        // An explicit native point is independent of custom mask parsing. A
+        // rejected point leaves native Size, OccupyList and exit policy intact.
+        if (repair_cell_present && Read_Custom_Unit_Repair_Cell()) {
+            Invalidate_Foundation_Sync_CRC();
+            if (Vinifera_DeveloperMode) {
+                DEBUG_INFO("[GREPAIR] type={} event=CONFIG_ACCEPTED foundationMode=NATIVE width={} height={} cell=({}, {})\n",
+                    Name(), type->Width(), type->Height(), CustomUnitRepairCell.X, CustomUnitRepairCell.Y);
+            }
+        }
+        return;
+    }
+    if (FoundationCellCount == 0) {
+        if (Vinifera_DeveloperMode && repair_cell_present) {
+            DEBUG_INFO("[GREPAIR] type={} event=CONFIG_REJECTED foundationMode=CUSTOM validator=FOUNDATION reason=INVALID_CUSTOM_FOUNDATION nativeSize={}\n", Name(),
+                static_cast<int>(type->Size));
+        }
+        return;
+    }
     const bool infantry_factory = type->ToBuild == RTTI_INFANTRYTYPE;
     const bool aircraft_helipad = type->ToBuild == RTTI_AIRCRAFTTYPE &&
         type->IsHelipad && type->IsCanUnitReload;
     const bool pad_request = type->ToBuild == RTTI_AIRCRAFTTYPE || type->IsHelipad || type->IsCanUnitReload;
+    if (repair_request && !Read_Custom_Unit_Repair_Cell()) {
+        Reset_Custom_Foundation();
+        return;
+    }
+    // Set only after the Ground role, connected mask and occupied cell passed.
+    // Do not use the published eligibility query before IsCustomFoundationValid.
+    const bool ground_repair = type->IsCanUnitRepair && CustomUnitRepairCellSet;
     bool reverse_conflict = false;
     const char* reason = nullptr;
 
@@ -655,7 +843,8 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
                (!infantry_factory && (type->IsGDIBarracks || type->IsNODBarracks))) {
         reason = "factory/construction/service building";
     } else if (type->IsRefinery || type->IsWeeder || type->FreeUnit != nullptr ||
-               type->IsCanUnitRepair || (type->IsCanUnitReload && !aircraft_helipad) || type->IsDockUnload ||
+               (type->IsCanUnitRepair && !ground_repair) ||
+               (type->IsCanUnitReload && !aircraft_helipad && !ground_repair) || type->IsDockUnload ||
                type->IsHoverPad || type->IsHospital || type->IsArmory || type->Dock.Count() != 0) {
         reason = "dock/refinery/repair contract";
     } else if (type->IsWall || type->IsGate || type->IsLaserFencePost || type->IsLaserFence ||
@@ -669,7 +858,7 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
         reason = "deploy/undeploy/mobile building contract";
     } else if (type->IsBibbed) {
         reason = "IsBibbed contract";
-    } else if (!aircraft_helipad &&
+    } else if (!aircraft_helipad && !ground_repair &&
                (type->BibShape != nullptr ||
                 !ArtINI.Get_String(type->GraphicName.c_str(), "BibShape", std::string()).empty())) {
         reason = "BibShape contract";
@@ -685,6 +874,13 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     }
 
     if (reason != nullptr) {
+        if (repair_request) {
+            if (Vinifera_DeveloperMode) {
+                DEBUG_WARNING("[GREPAIR] type={} event=CONFIG_REJECTED foundationMode=CUSTOM validator=FOUNDATION_SCOPE reason=ROLE_CONFLICT detail={}\n", Name(), reason);
+            }
+            Reset_Custom_Foundation();
+            return;
+        }
         if (pad_request && Vinifera_DeveloperMode) {
             DEBUG_WARNING("[CFPAD] type={} event=DOCK_REJECT reason={} detail={}\n",
                 Name(), reverse_conflict ? "REVERSE_DOCK_CONFLICT" : "ROLE_CONFLICT", reason);
@@ -704,6 +900,11 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     }
     Read_Custom_Infantry_Exit_Cell();
     Invalidate_Foundation_Sync_CRC();
+    if (CustomUnitRepairCellSet && Vinifera_DeveloperMode) {
+        DEBUG_INFO("[GREPAIR] type={} event=CONFIG_ACCEPTED foundationMode=CUSTOM width={} height={} occupied={} cellSet={} cell=({}, {})\n",
+            Name(), FoundationWidth, FoundationHeight, FoundationCellCount, CustomUnitRepairCellSet,
+            CustomUnitRepairCell.X, CustomUnitRepairCell.Y);
+    }
     if (!was_valid) {
         DEV_DEBUG_INFO("[CUSTOMFOUNDATION] type={} event=LOADED width={} height={} count={}\n",
             Name(), FoundationWidth, FoundationHeight, FoundationCellCount);
@@ -999,6 +1200,12 @@ void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
         crc(static_cast<int>(CustomAircraftDockCell.X));
         crc(static_cast<int>(CustomAircraftDockCell.Y));
     }
+    if (CustomUnitRepairCellSet) {
+        crc(static_cast<unsigned>(0x47525054)); // GRPT: Ground Repair Point Type.
+        crc(static_cast<int>(CustomUnitRepairCellSet));
+        crc(static_cast<int>(CustomUnitRepairCell.X));
+        crc(static_cast<int>(CustomUnitRepairCell.Y));
+    }
 }
 
 /**
@@ -1014,7 +1221,7 @@ unsigned BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(unsigned native_
         for (int i = 0; i < BuildingTypes.Count(); ++i) {
             const auto type = BuildingTypes[i];
             const auto ext = Extension::Fetch(type);
-            if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock())) {
+            if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock() || ext->CustomUnitRepairCellSet)) {
                 FoundationSyncCRCPresent = true;
                 config(static_cast<int>(type->HeapID));
                 config(static_cast<unsigned>(CRCEngine::CRC_String(type->IniName.c_str(), 0)));

@@ -24,9 +24,14 @@
 #include "housetype.h"
 #include "cell.h"
 #include "debughandler.h"
+#include "drivelocomotion.h"
+#include "foot.h"
 #include "map.h"
 #include "mouse.h"
 #include "tibsun_globals.h"
+#include "unit.h"
+#include "unittype.h"
+#include "unittypeext.h"
 #include "vinifera_globals.h"
 #include "vinifera_saveload.h"
 #include "wwcrc.h"
@@ -35,6 +40,107 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+
+bool BuildingClassExtension::Is_Supported_Unit_Repair_Visitor(const TechnoClass* visitor)
+{
+    if (!visitor || visitor->RTTI != RTTI_UNIT || !visitor->IsActive || visitor->IsInLimbo ||
+        visitor->Strength <= 0 || visitor->IsOnBridge || visitor->IsFalling || visitor->IsOnCarryall ||
+        visitor->IsSinking) return false;
+    const auto unit = static_cast<const UnitClass*>(visitor);
+    const auto type = unit->Class;
+    if (!type || (type->Speed != SPEED_TRACK && type->Speed != SPEED_WHEEL) ||
+        (type->MZone != MZONE_NORMAL && type->MZone != MZONE_CRUSHER && type->MZone != MZONE_DESTROYER) ||
+        type->Locomotor != __uuidof(DriveLocomotionClass) || type->IsTrain || type->IsSubterranean ||
+        type->IsDropship || type->IsHunterSeeker || type->IsNonVehicle || type->IsJellyfish ||
+        type->IsLimpetDrone || type->IsSmallVisceroid || type->IsLargeVisceroid ||
+        unit->CurrentTube != TUBE_NONE || unit->Cargo.Is_Something_Attached() || !unit->Locomotion) return false;
+    const auto type_ext = Extension::Fetch(type);
+    if (type_ext->IsNaval || type_ext->IsSpawned || type_ext->IsMissileSpawn ||
+        (unit->Radio && unit->Radio->RTTI == RTTI_AIRCRAFT)) return false;
+
+    // The configured CLSID alone does not rule out an active temporary/piggyback
+    // locomotor. Query its real IPersistStream, as FixedWing already does.
+    IPersistStream* persist = nullptr;
+    if (FAILED(unit->Locomotion->QueryInterface(__uuidof(IPersistStream),
+        reinterpret_cast<void**>(&persist))) || !persist) return false;
+    CLSID id;
+    const HRESULT hr = persist->GetClassID(&id);
+    persist->Release();
+    if (FAILED(hr) || id != __uuidof(DriveLocomotionClass)) return false;
+    const auto drive = static_cast<DriveLocomotionClass*>(static_cast<ILocomotion*>(unit->Locomotion));
+    return !drive->Piggybacker;
+}
+
+bool BuildingClassExtension::Custom_Unit_Repair_Coord(Coord& result, const TechnoClass* visitor) const
+{
+    if (Vinifera_PerformingLoad) return false;
+    const auto building = This_Const();
+    const auto type = Extension::Fetch(building->Class);
+    if (!type->Is_Unit_Repair_Cell_Eligible() ||
+        (visitor && !Is_Supported_Unit_Repair_Visitor(visitor))) return false;
+    const Cell cell = building->Get_Cell() + type->CustomUnitRepairCell;
+    if (!Map.In_Radar(cell)) return false;
+    const Coord point = cell.As_Coord(building->Get_Coord().Z);
+    if (Map[cell].Cell_Building() != building || Map[cell].IsUnderBridge ||
+        Map.Get_Height_GL(point) != point.Z) return false;
+    result = point;
+    return true;
+}
+
+bool BuildingClassExtension::Custom_Unit_Repair_Contact_Coord(Coord& result) const
+{
+    if (Vinifera_PerformingLoad) return false;
+    const auto building = This_Const();
+    const auto peer = building->Radio;
+    return peer && peer->Radio == building && peer->RTTI == RTTI_UNIT &&
+        Custom_Unit_Repair_Coord(result, static_cast<const UnitClass*>(peer));
+}
+
+bool BuildingClassExtension::Custom_Unit_Repair_Nav_Coord(const FootClass* visitor, Coord& result)
+{
+    if (Vinifera_PerformingLoad || !visitor || visitor->RTTI != RTTI_UNIT ||
+        !visitor->NavCom || visitor->NavCom->RTTI != RTTI_BUILDING || visitor->Radio != visitor->NavCom) return false;
+    const auto building = static_cast<const BuildingClass*>(visitor->NavCom);
+    return building->Radio == visitor && Extension::Fetch(building)->Custom_Unit_Repair_Coord(result, visitor);
+}
+
+Cell BuildingClassExtension::Custom_Unit_Repair_Exit(const TechnoClass* visitor) const
+{
+    if (Vinifera_PerformingLoad) return CELL_NONE;
+    const auto type = Extension::Fetch(This_Const()->Class);
+    if (!type->Is_Custom_Foundation_Unit_Repair_Eligible()) return CELL_NONE;
+    Coord service;
+    if (!visitor || !Custom_Unit_Repair_Coord(service, visitor)) return CELL_NONE;
+    const auto building = This_Const();
+    const Cell origin = building->Get_Cell();
+    const auto usable = [&](int x, int y) {
+        // The outer bounding ring is outside every occupied mask cell. Still
+        // check the actual occupier; never return an interior native ExitList cell.
+        const Cell cell(origin.X + x, origin.Y + y);
+        if (cell == CELL_NONE || !Map.In_Radar(cell) || Map[cell].Cell_Building() == building ||
+            const_cast<TechnoClass*>(visitor)->Can_Enter_Cell(&Map[cell], FACING_NONE, -1, nullptr, true) != MOVE_OK) return CELL_NONE;
+        if (Vinifera_DeveloperMode) {
+            DEBUG_INFO("[GREPAIR] building={} unit={} event=EXIT_SELECTED cell=({}, {})\n",
+                building->ID, visitor->ID, cell.X, cell.Y);
+        }
+        return cell;
+    };
+    for (int x = -1; x <= type->FoundationWidth; ++x) {
+        Cell exit = usable(x, -1);
+        if (exit != CELL_NONE) return exit;
+        exit = usable(x, type->FoundationHeight);
+        if (exit != CELL_NONE) return exit;
+    }
+    for (int y = -1; y <= type->FoundationHeight; ++y) {
+        Cell exit = usable(-1, y);
+        if (exit != CELL_NONE) return exit;
+        exit = usable(type->FoundationWidth, y);
+        if (exit != CELL_NONE) return exit;
+    }
+    // The native caller retains its contact/retry contract. No forced release
+    // and no repeated blocked-exit log from the mission retry loop.
+    return CELL_NONE;
+}
 
 namespace
 {

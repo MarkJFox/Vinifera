@@ -12,6 +12,7 @@
 #include "drivelocomotionext_hooks.h"
 
 #include "anim.h"
+#include "buildingext.h"
 #include "cell.h"
 #include "drivelocomotion.h"
 #include "extension.h"
@@ -22,6 +23,35 @@
 #include "syringe.h"
 #include "technotype.h"
 #include "technotypeext.h"
+
+// D4b: native Drive::Process is __stdcall and ESI is its ILocomotion
+// subobject; TSpp's base-to-derived cast adjusts -4 to the real Drive object.
+// Original 8B 08 / 8B 50 04 (5), EAX=returned Coord*. Replay ->47E1BC.
+DEFINE_HOOK(0x0047E1B7, _Drive_Process_Custom_Repair_Target, 5)
+{
+    GET(ILocomotion*, locomotion, ESI);
+    const auto drive = static_cast<DriveLocomotionClass*>(locomotion);
+    Coord point;
+    if (BuildingClassExtension::Custom_Unit_Repair_Nav_Coord(drive->LinkedTo, point)) {
+        GET(Coord*, result, EAX);
+        *result = point;
+    }
+    return 0;
+}
+
+// Internal While_Moving is __thiscall: EBP=real Drive*, EAX=target Coord*.
+// Original 8B C8 / 8B 01 / 99 (5). Replay (including CDQ) ->47F85C.
+// Do not intercept the owner's own entry_50/Z call at 47F8A7.
+DEFINE_HOOK(0x0047F857, _Drive_While_Moving_Custom_Repair_Target, 5)
+{
+    GET(DriveLocomotionClass*, drive, EBP);
+    Coord point;
+    if (BuildingClassExtension::Custom_Unit_Repair_Nav_Coord(drive->LinkedTo, point)) {
+        GET(Coord*, result, EAX);
+        *result = point;
+    }
+    return 0;
+}
 
 
 /**

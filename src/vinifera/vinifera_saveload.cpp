@@ -1126,6 +1126,10 @@ bool Vinifera_Load_Game(const char* file_name)
     SwizzleManager.Reset();
     // All native and extension pointers have now been remapped. Never validate
     // cyclic dock references while extension Load is still reading raw IDs.
+    if (!BuildingTypeClassExtension::Validate_Custom_Unit_Repairs_After_Load()) {
+        DEBUG_ERROR("Invalid custom ground repair type configuration in save game.\n");
+        return false;
+    }
     if (!BuildingClassExtension::Validate_Aircraft_Docks_After_Load()) {
         DEBUG_ERROR("Invalid MultiDock references or configuration in save game.\n");
         return false;

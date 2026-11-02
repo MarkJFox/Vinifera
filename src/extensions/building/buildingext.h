@@ -19,6 +19,7 @@
 class BuildingClass;
 class AircraftClass;
 class HouseClass;
+class FootClass;
 
 
 class DECLSPEC_UUID(UUID_BUILDING_EXTENSION)
@@ -49,6 +50,13 @@ BuildingClassExtension final : public TechnoClassExtension
         virtual RTTIType Fetch_RTTI() const override { return RTTI_BUILDING; }
 
         void Produce_Cash_AI();
+
+        // D4b uses native scalar Radio ownership; these queries allocate no state.
+        static bool Is_Supported_Unit_Repair_Visitor(const TechnoClass* visitor);
+        bool Custom_Unit_Repair_Coord(Coord& result, const TechnoClass* visitor = nullptr) const;
+        bool Custom_Unit_Repair_Contact_Coord(Coord& result) const;
+        static bool Custom_Unit_Repair_Nav_Coord(const FootClass* visitor, Coord& result);
+        Cell Custom_Unit_Repair_Exit(const TechnoClass* visitor) const;
 
         bool Is_Aircraft_MultiDock() const;
         int Find_Aircraft_Dock_Slot(const AircraftClass* aircraft) const;
