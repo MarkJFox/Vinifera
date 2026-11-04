@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <string>
 #include <system_error>
@@ -135,7 +136,9 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     CustomAircraftDockCell(0, 0),
     AircraftDockCount(1),
     CustomUnitRepairCellSet(false),
-    CustomUnitRepairCell(0, 0)
+    CustomUnitRepairCell(0, 0),
+    CustomUnitFactoryExitCellSet(false),
+    CustomUnitFactoryExitCell(0, 0)
 {
     std::fill(std::begin(AircraftDockCells), std::end(AircraftDockCells), Cell(0, 0));
     Reset_Custom_Foundation();
@@ -199,6 +202,16 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
     }
 
     new (this) BuildingTypeClassExtension(NoInitClass());
+
+    // Only owned POD is available here; native owner pointers are not swizzled.
+    if (CustomUnitFactoryExitCellSet) {
+        if (CustomUnitFactoryExitCell.X < std::numeric_limits<short>::min() + 3 ||
+            (IsCustomFoundationEnabled && (!IsCustomFoundationValid ||
+                !Validate_Custom_Foundation_Cells() ||
+                Has_Custom_Foundation_Cell(CustomUnitFactoryExitCell.X, CustomUnitFactoryExitCell.Y)))) return E_FAIL;
+    } else if (CustomUnitFactoryExitCell != Cell(0, 0)) {
+        return E_FAIL;
+    }
 
     // ThisPtr is not swizzled. Inspect only owned POD before registering peers.
     if (AircraftDockCount < 1 || AircraftDockCount > MAX_AIRCRAFT_DOCKS) return E_FAIL;
@@ -397,6 +410,8 @@ void BuildingTypeClassExtension::Reset_Custom_Foundation()
     std::fill(std::begin(CustomFoundationCells), std::end(CustomFoundationCells), REFRESH_EOL);
     CustomUnitRepairCellSet = false;
     CustomUnitRepairCell = Cell(0, 0);
+    CustomUnitFactoryExitCellSet = false;
+    CustomUnitFactoryExitCell = Cell(0, 0);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
 }
@@ -785,6 +800,91 @@ bool BuildingTypeClassExtension::Read_Custom_Aircraft_Dock_Cell(bool require_sin
     return true;
 }
 
+const char* BuildingTypeClassExtension::Unit_Factory_Role_Error() const
+{
+    const auto type = This_Const();
+    if (type->ToBuild != RTTI_UNITTYPE || !type->IsWeaponsFactory || IsNaval ||
+        type->IsRefinery || type->IsWeeder || type->FreeUnit || type->IsDockUnload ||
+        type->IsHelipad || type->IsHoverPad || type->IsCanUnitRepair || type->IsCanUnitReload ||
+        type->IsHospital || type->IsArmory || type->IsConstructionYard ||
+        type->IsGDIBarracks || type->IsNODBarracks || type->Dock.Count() != 0 ||
+        type->DeploysInto || type->UndeploysInto || type->ToTile || type->ToOverlay ||
+        type->IsWall || type->IsGate || type->IsPlug || type->IsLaserFence || type->IsLaserFencePost ||
+        type->IsFirestormWall || !type->PowersUpBuilding.empty() || type->Upgrades != 0) return "ROLE_CONFLICT";
+    // Keep the custom scope exclusions and require a land-only factory with
+    // no aircraft dock state. Native foundations retain their D5 role contract.
+    if (IsCustomFoundationEnabled && (AircraftDockCount != 1 || type->Speed == SPEED_FLOAT ||
+        type->IsTickTank || type->IsArtillary || type->IsJuggernaut || type->IsICBMLauncher ||
+        type->IsMobileWar || type->IsMobileStealth || type->IsCoreDefender || type->IsLimpetMine ||
+        !type->IsFootprint || type->IsCanPlaceAnywhere || type->IsBridgeRepairHut || type->IsInvisibleInGame ||
+        Has_Foundation_Service_Reference(BuildingTypes, type) ||
+        Has_Foundation_Service_Reference(UnitTypes, type) ||
+        Has_Foundation_Service_Reference(InfantryTypes, type) ||
+        Has_Foundation_Service_Reference(AircraftTypes, type))) return "ROLE_CONFLICT";
+    return nullptr;
+}
+
+bool BuildingTypeClassExtension::Is_Custom_Foundation_Unit_Factory_Eligible() const
+{
+    // Finalize uses this before publishing IsCustomFoundationValid. Require
+    // both the pure role and the actual mask/free exit, not just a set key.
+    return IsCustomFoundationEnabled && CustomUnitFactoryExitCellSet &&
+        Unit_Factory_Role_Error() == nullptr &&
+        Unit_Factory_Exit_Cell_Error(CustomUnitFactoryExitCell.X, CustomUnitFactoryExitCell.Y) == nullptr;
+}
+
+const char* BuildingTypeClassExtension::Unit_Factory_Exit_Cell_Error(int x, int y) const
+{
+    if (x < std::numeric_limits<short>::min() + 3 || x > std::numeric_limits<short>::max() ||
+        y < std::numeric_limits<short>::min() || y > std::numeric_limits<short>::max()) return "CELL_OVERFLOW";
+    if (IsCustomFoundationEnabled) {
+        if (!Validate_Custom_Foundation_Cells()) return "INVALID_CUSTOM_FOUNDATION";
+        return Has_Custom_Foundation_Cell(x, y) ? "EXIT_OCCUPIED_BY_FOUNDATION" : nullptr;
+    }
+    const auto type = This_Const();
+    if (type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT) return "INVALID_NATIVE_FOUNDATION";
+    const auto cells = type->Occupy_List(false);
+    for (int i = 0; cells && i < static_cast<int>(std::size(BuildingOccupyLists[0])) && cells[i] != REFRESH_EOL; ++i) {
+        if (cells[i].X == x && cells[i].Y == y) return "EXIT_OCCUPIED_BY_FOUNDATION";
+    }
+    return nullptr;
+}
+
+void BuildingTypeClassExtension::Read_Custom_Unit_Factory_Exit_Cell()
+{
+    const auto type = This_Const();
+    const auto section = type->GraphicName.c_str();
+    if (!ArtINI.Is_Present(section, "UnitFactoryExitCell")) return;
+    char buffer[128] = {};
+    const int length = ArtINI.Get_String(section, "UnitFactoryExitCell", "", buffer, sizeof(buffer));
+    const char* cursor = buffer;
+    int x = 0;
+    int y = 0;
+    bool parsed = length > 0 && length < static_cast<int>(sizeof(buffer)) - 1 &&
+        Read_Foundation_Integer(cursor, x) && *cursor == ',';
+    if (parsed) {
+        ++cursor;
+        parsed = Read_Foundation_Integer(cursor, y) && *cursor == '\0';
+    }
+    const char* reason = parsed ? nullptr : "MALFORMED_CELL";
+    if (!reason) reason = Unit_Factory_Role_Error();
+    if (!reason) reason = Unit_Factory_Exit_Cell_Error(x, y);
+    if (reason) {
+        DEBUG_WARNING("[UNITFACTORY] type={} UnitFactoryExitCell={} rejected: {}; native fallback retained.\n",
+            Name(), buffer, reason);
+        return;
+    }
+    CustomUnitFactoryExitCell = Cell(static_cast<short>(x), static_cast<short>(y));
+    CustomUnitFactoryExitCellSet = true;
+}
+
+bool BuildingTypeClassExtension::Has_Custom_Unit_Factory_Exit() const
+{
+    return CustomUnitFactoryExitCellSet && !Vinifera_PerformingLoad &&
+        (!IsCustomFoundationEnabled || IsCustomFoundationValid) && !IsNaval &&
+        This_Const()->IsWeaponsFactory && This_Const()->ToBuild == RTTI_UNITTYPE;
+}
+
 /**
  *  Called after every complete Rules::Objects pass. Reverse Dock/DeploysInto
  *  references cannot be validated while BuildingTypes are read before Units.
@@ -793,6 +893,7 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
 {
     if (Vinifera_PerformingLoad) return;
     Read_Custom_Foundation();
+    Read_Custom_Unit_Factory_Exit_Cell();
     const BuildingTypeClass* type = This_Const();
     const bool repair_cell_present = ArtINI.Is_Present(type->GraphicName.c_str(), "UnitRepairCell");
     const bool repair_request = type->IsCanUnitRepair || repair_cell_present;
@@ -823,6 +924,7 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
         return;
     }
     const bool infantry_factory = type->ToBuild == RTTI_INFANTRYTYPE;
+    const bool unit_factory = Is_Custom_Foundation_Unit_Factory_Eligible();
     const bool aircraft_helipad = type->ToBuild == RTTI_AIRCRAFTTYPE &&
         type->IsHelipad && type->IsCanUnitReload;
     const bool pad_request = type->ToBuild == RTTI_AIRCRAFTTYPE || type->IsHelipad || type->IsCanUnitReload;
@@ -838,8 +940,8 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
 
     if (!Validate_Custom_Foundation_Cells() || type->Size < BSIZE_FIRST || type->Size >= BSIZE_COUNT) {
         reason = "invalid custom mask or native fallback";
-    } else if ((type->ToBuild != RTTI_NONE && !infantry_factory && !aircraft_helipad) ||
-               type->IsWeaponsFactory || type->IsConstructionYard || (type->IsHelipad && !aircraft_helipad) ||
+    } else if ((type->ToBuild != RTTI_NONE && !infantry_factory && !aircraft_helipad && !unit_factory) ||
+               (type->IsWeaponsFactory && !unit_factory) || type->IsConstructionYard || (type->IsHelipad && !aircraft_helipad) ||
                (!infantry_factory && (type->IsGDIBarracks || type->IsNODBarracks))) {
         reason = "factory/construction/service building";
     } else if (type->IsRefinery || type->IsWeeder || type->FreeUnit != nullptr ||
@@ -856,9 +958,9 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
                type->IsICBMLauncher || type->IsMobileWar || type->IsMobileStealth ||
                type->IsCoreDefender || type->IsLimpetMine) {
         reason = "deploy/undeploy/mobile building contract";
-    } else if (type->IsBibbed) {
+    } else if (type->IsBibbed && !unit_factory) {
         reason = "IsBibbed contract";
-    } else if (!aircraft_helipad && !ground_repair &&
+    } else if (!aircraft_helipad && !ground_repair && !unit_factory &&
                (type->BibShape != nullptr ||
                 !ArtINI.Get_String(type->GraphicName.c_str(), "BibShape", std::string()).empty())) {
         reason = "BibShape contract";
@@ -874,6 +976,9 @@ void BuildingTypeClassExtension::Finalize_Custom_Foundation()
     }
 
     if (reason != nullptr) {
+        if (unit_factory) {
+            DEBUG_WARNING("[UNITFACTORY] type={} UnitFactoryExitCell rejected: {}; native fallback retained.\n", Name(), reason);
+        }
         if (repair_request) {
             if (Vinifera_DeveloperMode) {
                 DEBUG_WARNING("[GREPAIR] type={} event=CONFIG_REJECTED foundationMode=CUSTOM validator=FOUNDATION_SCOPE reason=ROLE_CONFLICT detail={}\n", Name(), reason);
@@ -1206,6 +1311,12 @@ void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
         crc(static_cast<int>(CustomUnitRepairCell.X));
         crc(static_cast<int>(CustomUnitRepairCell.Y));
     }
+    if (CustomUnitFactoryExitCellSet) {
+        crc(static_cast<unsigned>(0x55465854)); // UFXT: Unit Factory Exit Type.
+        crc(static_cast<int>(CustomUnitFactoryExitCellSet));
+        crc(static_cast<int>(CustomUnitFactoryExitCell.X));
+        crc(static_cast<int>(CustomUnitFactoryExitCell.Y));
+    }
 }
 
 /**
@@ -1221,7 +1332,8 @@ unsigned BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(unsigned native_
         for (int i = 0; i < BuildingTypes.Count(); ++i) {
             const auto type = BuildingTypes[i];
             const auto ext = Extension::Fetch(type);
-            if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock() || ext->CustomUnitRepairCellSet)) {
+            if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock() ||
+                ext->CustomUnitRepairCellSet || ext->CustomUnitFactoryExitCellSet)) {
                 FoundationSyncCRCPresent = true;
                 config(static_cast<int>(type->HeapID));
                 config(static_cast<unsigned>(CRCEngine::CRC_String(type->IniName.c_str(), 0)));

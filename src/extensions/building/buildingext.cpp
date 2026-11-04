@@ -22,6 +22,7 @@
 #include "fixedwing.h"
 #include "house.h"
 #include "housetype.h"
+#include "hoverlocomotion.h"
 #include "cell.h"
 #include "debughandler.h"
 #include "drivelocomotion.h"
@@ -29,6 +30,7 @@
 #include "map.h"
 #include "mouse.h"
 #include "tibsun_globals.h"
+#include "tibsun_inline.h"
 #include "unit.h"
 #include "unittype.h"
 #include "unittypeext.h"
@@ -40,6 +42,219 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+
+namespace
+{
+    bool Unit_Factory_Locomotor_ID(const UnitClass* unit, CLSID& id)
+    {
+        if (!unit || !unit->Locomotion) return false;
+        IPersistStream* persist = nullptr;
+        if (FAILED(unit->Locomotion->QueryInterface(__uuidof(IPersistStream),
+            reinterpret_cast<void**>(&persist))) || !persist) return false;
+        const HRESULT hr = persist->GetClassID(&id);
+        persist->Release();
+        return SUCCEEDED(hr);
+    }
+
+    DriveLocomotionClass* Unit_Factory_Drive(const UnitClass* unit)
+    {
+        CLSID id;
+        if (!Unit_Factory_Locomotor_ID(unit, id) || id != __uuidof(DriveLocomotionClass)) return nullptr;
+        auto drive = static_cast<DriveLocomotionClass*>(static_cast<ILocomotion*>(unit->Locomotion));
+        return drive;
+    }
+
+    bool Unit_Factory_Released_Hover(const ObjectClass* object)
+    {
+        if (!object || object->RTTI != RTTI_UNIT) return false;
+        const auto unit = static_cast<const UnitClass*>(object);
+        if (unit->IsTethered || unit->Radio) return false;
+        CLSID id;
+        return Unit_Factory_Locomotor_ID(unit, id) && id == __uuidof(HoverLocomotionClass);
+    }
+
+    bool Unit_Factory_Cell_Has_Released_Hover(const CellClass& cell)
+    {
+        for (auto object = cell.Cell_Occupier(); object; object = object->Next) {
+            if (Unit_Factory_Released_Hover(object)) return true;
+        }
+        return false;
+    }
+
+    bool Unit_Factory_Clear_Cell(const BuildingClass* building, Cell& exit)
+    {
+        if (Vinifera_PerformingLoad) return false;
+        const auto ext = Extension::Fetch(building);
+        if (ext->Has_Unit_Factory_Exit_Override()) {
+            Coord door;
+            Coord spawn;
+            return ext->Unit_Factory_Exit_Geometry(exit, door, spawn);
+        }
+        // The Hover clearing fix also covers native factories without a D5 key.
+        const auto type = building->Class;
+        if (!type->IsWeaponsFactory || type->ToBuild != RTTI_UNITTYPE ||
+            Extension::Fetch(type)->IsNaval || type->Speed == SPEED_FLOAT || !type->ExitList) return false;
+        const Cell origin = building->Get_Cell();
+        const Cell offset = type->ExitList[8];
+        const int x = static_cast<int>(origin.X) + offset.X;
+        const int y = static_cast<int>(origin.Y) + offset.Y;
+        if (x < std::numeric_limits<short>::min() || x > std::numeric_limits<short>::max() ||
+            y < std::numeric_limits<short>::min() || y > std::numeric_limits<short>::max()) return false;
+        exit = Cell(static_cast<short>(x), static_cast<short>(y));
+        return Map.In_Radar(exit);
+    }
+
+    void Unit_Factory_Clear_Endpoint(CellClass& cell, const BuildingClass* building)
+    {
+        if (!Unit_Factory_Cell_Has_Released_Hover(cell)) {
+            cell.Incoming(COORD_NONE, true, true);
+            return;
+        }
+        // Incoming with nokidding=true calls Scatter on every snapshot object.
+        // Only released Hover blockers need a nonzero source: the zero-threat
+        // Nearby_Location search can select their unreserved current cell again.
+        DynamicVectorClass<ObjectClass*> objects;
+        for (auto object = cell.Cell_Occupier(); object; object = object->Next) objects.Add(object);
+        const Coord source = building->Get_Cell().As_Coord();
+        for (int i = 0; i < objects.Count(); ++i) {
+            objects[i]->Scatter(Unit_Factory_Released_Hover(objects[i]) ? source : COORD_NONE, true, true);
+        }
+    }
+
+    // Track13 crosses exactly these four cells in a single row. The building
+    // itself is intentional occupation; all other occupiers remain blockers.
+    bool Unit_Factory_Cell_Clear(const BuildingClass* building, const UnitClass* product, const Cell& cell,
+        bool check_passability = true)
+    {
+        if (!product || !Map.In_Radar(cell) || Map[cell].IsUnderBridge) return false;
+        const Coord point = cell.As_Coord(building->Get_Coord().Z);
+        if (Map.Get_Height_GL(point) != point.Z) return false;
+        for (auto object = Map[cell].Cell_Occupier(); object; object = object->Next) {
+            if (object != building && object != product) return false;
+        }
+        // Native Drive checks use the unit's cell height; -1 is not a ground-height default in Can_Reach.
+        if (check_passability && Map[cell].Cell_Building() != building &&
+            const_cast<UnitClass*>(product)->Can_Enter_Cell(&Map[cell], FACING_E,
+                product->Get_Cell_Height(), nullptr, true) != MOVE_OK) return false;
+        return true;
+    }
+}
+
+bool BuildingClassExtension::Has_Unit_Factory_Exit_Override() const
+{
+    if (Vinifera_PerformingLoad) return false;
+    const auto building = This_Const();
+    const auto type = Extension::Fetch(building->Class);
+    if (!type->Has_Custom_Unit_Factory_Exit()) return false;
+    if (type->IsCustomFoundationEnabled || building->Class->Size != BSIZE_33 ||
+        type->CustomUnitFactoryExitCell != Cell(3, 1) || !building->Class->ExitList ||
+        building->Class->ExitList[8] != Cell(3, 1)) return true;
+    const Coord position = building->Get_Coord();
+    // A native mask/list and centered anchor make all D5 geometry an identity.
+    return position != building->Get_Cell().As_Coord(position.Z);
+}
+
+bool BuildingClassExtension::Unit_Factory_Exit_Geometry(Cell& exit, Coord& door, Coord& spawn) const
+{
+    if (!Has_Unit_Factory_Exit_Override()) return false;
+    const auto building = This_Const();
+    const auto type = Extension::Fetch(building->Class);
+    const Cell origin = building->Get_Cell();
+    const int x = static_cast<int>(origin.X) + type->CustomUnitFactoryExitCell.X;
+    const int y = static_cast<int>(origin.Y) + type->CustomUnitFactoryExitCell.Y;
+    if (x < std::numeric_limits<short>::min() + 3 || x > std::numeric_limits<short>::max() ||
+        y < std::numeric_limits<short>::min() || y > std::numeric_limits<short>::max()) return false;
+    exit = Cell(static_cast<short>(x), static_cast<short>(y));
+    door = exit.As_Coord(building->Get_Coord().Z);
+    spawn = door + Coord(-670, -68, 0); // Exact first point of native Track13.
+    // Coord::As_Cell truncates negative values toward zero; reject before conversion.
+    if (spawn.X < 0 || spawn.Y < 0) return false;
+    return Map.In_Radar(exit) && Map.In_Radar(spawn.As_Cell());
+}
+
+bool BuildingClassExtension::Is_Supported_Unit_Factory_Product(const TechnoClass* product)
+{
+    // Factory selection and native Unlimbo/dispatch own the product contract.
+    return product && product->RTTI == RTTI_UNIT;
+}
+
+bool BuildingClassExtension::Unit_Factory_Spawn_Clear(const UnitClass* product) const
+{
+    Cell exit;
+    Coord door;
+    Coord spawn;
+    return Unit_Factory_Exit_Geometry(exit, door, spawn) &&
+        Unit_Factory_Cell_Clear(This_Const(), product, spawn.As_Cell(), false);
+}
+
+bool BuildingClassExtension::Unit_Factory_Corridor_Clear(const UnitClass* product) const
+{
+    Cell exit;
+    Coord door;
+    Coord spawn;
+    if (!product) return false;
+    // Guard active Drive only; other dispatch, including Tunnel conversion, stays native.
+    if (!Unit_Factory_Drive(product)) return true;
+    if (!Unit_Factory_Exit_Geometry(exit, door, spawn)) return false;
+    for (int x = exit.X - 3; x <= exit.X; ++x) {
+        if (!Unit_Factory_Cell_Clear(This_Const(), product, Cell(static_cast<short>(x), exit.Y))) return false;
+    }
+    return true;
+}
+
+bool BuildingClassExtension::Unit_Factory_Track_Started() const
+{
+    const auto peer = This_Const()->Radio;
+    if (!peer || peer->RTTI != RTTI_UNIT) return true; // Retain native lost-contact handling.
+    const auto drive = Unit_Factory_Drive(static_cast<const UnitClass*>(peer));
+    return !drive || (drive->IsDriving && drive->TrackNumber == 66);
+}
+
+bool BuildingClassExtension::Has_Unit_Factory_Hover_Exit_Blocker() const
+{
+    Cell exit;
+    return Unit_Factory_Clear_Cell(This_Const(), exit) && Unit_Factory_Cell_Has_Released_Hover(Map[exit]);
+}
+
+bool BuildingClassExtension::Clear_Unit_Factory_Exit() const
+{
+    Cell exit;
+    if (!Unit_Factory_Clear_Cell(This_Const(), exit)) return true;
+    auto building = const_cast<BuildingClass*>(This_Const());
+    auto& cell = Map[exit];
+    if (cell.Cell_Techno(Point2D(0, 0), false, building)) {
+        Unit_Factory_Clear_Endpoint(cell, building);
+        for (int facing = FACING_FIRST; facing < FACING_COUNT; ++facing) {
+            const Cell adjacent = Adjacent_Cell(exit, static_cast<FacingType>(facing));
+            if (Map.In_Radar(adjacent) && Map[adjacent].Cell_Techno(Point2D(0, 0), false, building)) {
+                Map[adjacent].Incoming(exit.As_Coord(), true, true);
+            }
+        }
+        return true;
+    }
+    const auto peer = building->Radio;
+    if (peer && peer->RTTI == RTTI_UNIT && building->CurrentMission == MISSION_UNLOAD &&
+        !Unit_Factory_Corridor_Clear(static_cast<const UnitClass*>(peer))) {
+        // D5 waits for the forced Drive corridor as well as the native exit.
+        // Give its blockers the same native scatter request as exit neighbors.
+        // Snapshot before callbacks, as CellClass::Incoming does; never scatter
+        // the producing building or the current tethered product off its track.
+        DynamicVectorClass<ObjectClass*> blockers;
+        for (int x = exit.X - 3; x <= exit.X; ++x) {
+            const Cell corridor(static_cast<short>(x), exit.Y);
+            if (!Map.In_Radar(corridor)) continue;
+            for (auto object = Map[corridor].Cell_Occupier(); object; object = object->Next) {
+                if (object != building && object != peer) blockers.Add(object);
+            }
+        }
+        const Coord threat = exit.As_Coord();
+        for (int i = 0; i < blockers.Count(); ++i) {
+            blockers[i]->Scatter(threat, true, true);
+        }
+        return true; // A request is not clearance; recheck occupation on the next native retry.
+    }
+    return false;
+}
 
 bool BuildingClassExtension::Is_Supported_Unit_Repair_Visitor(const TechnoClass* visitor)
 {

@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0005D5 adds saved Art `UnitFactoryExitCell=X,Y` for eastward ground Weapons Factories on native or custom foundations. The save basis is now `0x1B0000`; start a new game. See [AF-0005D5](AF-0005D5.md).
 - Aftermath AF-0005D4b lets ground repair buildings define one occupied Art `UnitRepairCell=X,Y` on native or custom foundations, using native Drive visitors, scalar reservation and repair economy. Native foundations keep their native exit; custom foundations use an outer exit. Invalid native points are ignored without changing the foundation; invalid custom contracts retain the safe foundation fallback. Save basis remains `0x1A0000`. Custom off-center repair is user-confirmed; native support and full runtime acceptance remain pending. See [AF-0005D4b](AF-0005D4b.md).
 - Aftermath AF-0005D3c2 enables supported FixedWing Aircraft on MultiDock helipads, with slot-specific approach/landing, mixed normal/FixedWing capacity, shared reload, CAP rearm/resume and opposite-direction fallback per reserved slot. User runtime tests confirmed these scenarios and approach save/load; save basis remains `0x190000`. See [AF-0005D3c2](AF-0005D3c2.md).
 - Aftermath AF-0005D3c1 adds normal-Aircraft helipad MultiDock (`NumberOfDocks=2..16`, Art `DockingCell0..N-1`) with reservations, production, independent reload and saved contacts. FixedWing MultiDock is excluded; count absent/1 retains Single-Dock. D3 Single-Dock also accepts `DockingCell0`; `CustomDockCell` remains the compatible legacy key. Save basis is now `0x190000`; start a new game. See [AF-0005D3c1](AF-0005D3c1.md).
@@ -63,6 +64,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0005D5
+
+- Add opt-in `UnitFactoryExitCell` to translate native eastward Weapons Factory geometry while retaining native product/locomotor selection, doors, radio/tether and busy/release behavior. Native output, CustomFoundation single output and D5f vehicle/Mech consecutive clearing are user-confirmed. Hover WeaponsFactory consecutive-output clearing fix implemented, awaiting runtime validation.
 
 ### Aftermath save-game loading
 

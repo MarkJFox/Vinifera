@@ -2016,9 +2016,9 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0005D4b adds the saved BuildingType UnitRepairCell configuration.
+    // AF-0005D5 adds the saved BuildingType UnitFactoryExitCell configuration.
     // Reject older extension layouts globally, following the 0x10000 basis steps.
-    unsigned version = 0x1A0000;
+    unsigned version = 0x1B0000;
 
     /**
      *  For debug builds, offset the save file version.

@@ -20,6 +20,7 @@ class BuildingClass;
 class AircraftClass;
 class HouseClass;
 class FootClass;
+class UnitClass;
 
 
 class DECLSPEC_UUID(UUID_BUILDING_EXTENSION)
@@ -50,6 +51,15 @@ BuildingClassExtension final : public TechnoClassExtension
         virtual RTTIType Fetch_RTTI() const override { return RTTI_BUILDING; }
 
         void Produce_Cash_AI();
+
+        bool Has_Unit_Factory_Exit_Override() const;
+        bool Unit_Factory_Exit_Geometry(Cell& exit, Coord& door, Coord& spawn) const;
+        static bool Is_Supported_Unit_Factory_Product(const TechnoClass* product);
+        bool Unit_Factory_Spawn_Clear(const UnitClass* product) const;
+        bool Unit_Factory_Corridor_Clear(const UnitClass* product) const;
+        bool Unit_Factory_Track_Started() const;
+        bool Has_Unit_Factory_Hover_Exit_Blocker() const;
+        bool Clear_Unit_Factory_Exit() const;
 
         // D4b uses native scalar Radio ownership; these queries allocate no state.
         static bool Is_Supported_Unit_Repair_Visitor(const TechnoClass* visitor);

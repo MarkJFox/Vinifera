@@ -65,6 +65,7 @@ public:
     bool Is_Unit_Repair_Cell_Eligible() const;
     bool Is_Custom_Foundation_Unit_Repair_Eligible() const;
     static bool Validate_Custom_Unit_Repairs_After_Load();
+    bool Has_Custom_Unit_Factory_Exit() const;
     bool Custom_Foundation_In_Radar(const Cell& origin) const;
     const DynamicVectorClass<Point2D>* Custom_Foundation_Radar(const RadarClass& radar) const;
     static void Rebuild_Custom_Foundation_Radar(const RadarClass& radar);
@@ -73,6 +74,10 @@ public:
 private:
     void Read_Custom_Foundation();
     void Read_Custom_Infantry_Exit_Cell();
+    void Read_Custom_Unit_Factory_Exit_Cell();
+    const char* Unit_Factory_Role_Error() const;
+    bool Is_Custom_Foundation_Unit_Factory_Eligible() const;
+    const char* Unit_Factory_Exit_Cell_Error(int x, int y) const;
     bool Read_Custom_Unit_Repair_Cell();
     const char* Custom_Unit_Repair_Role_Error() const;
     const char* Custom_Unit_Repair_Cell_Error(int x, int y) const;
@@ -184,4 +189,6 @@ public:
     Cell AircraftDockCells[MAX_AIRCRAFT_DOCKS];
     bool CustomUnitRepairCellSet;
     Cell CustomUnitRepairCell; // Historical names also cover native-foundation repair points.
+    bool CustomUnitFactoryExitCellSet;
+    Cell CustomUnitFactoryExitCell;
 };

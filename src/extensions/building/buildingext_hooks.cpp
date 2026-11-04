@@ -68,6 +68,126 @@
 
 #include <algorithm>
 
+// D5 geometry applies only to explicitly configured land WeaponsFactory types.
+// Clear_Bib also fixes released Hover blockers at native exits. Inactive hooks
+// replay their complete original instructions, including native facing.
+DEFINE_HOOK(0x00434580, _Building_Exit_Coord_Unit_Factory, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    Cell exit;
+    Coord door;
+    Coord spawn;
+    if (!Extension::Fetch(building)->Unit_Factory_Exit_Geometry(exit, door, spawn)) return 0;
+    GET_STACK(Coord*, result, 0x4);
+    *result = spawn;
+    R->EAX(result);
+    return 0x004345CC; // Bare ret 4; the entry prologue has not executed.
+}
+
+DEFINE_HOOK(0x0042CB67, _Building_Exit_Object_Unit_Factory_Preflight, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    GET(TechnoClass*, product, EDI);
+    if (!BuildingClassExtension::Is_Supported_Unit_Factory_Product(product) ||
+        !Extension::Fetch(building)->Unit_Factory_Spawn_Clear(static_cast<const UnitClass*>(product))) {
+        DEBUG_WARNING("[UNITFACTORY] type={} cannot output this product at the configured spawn; native failure returned.\n",
+            building->Class->Name());
+        // Before ++ScenarioInit. The native zero-result epilogue pops the same
+        // saved registers and locals without decrementing ScenarioInit.
+        return 0x0042D966;
+    }
+    return 0;
+}
+
+DEFINE_HOOK(0x0042FF70, _Building_Clear_Weapons_Factory_Bib_Custom_Exit, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    const auto ext = Extension::Fetch(building);
+    if (!ext->Has_Unit_Factory_Exit_Override() && !ext->Has_Unit_Factory_Hover_Exit_Blocker()) return 0;
+    R->EAX(ext->Clear_Unit_Factory_Exit() ? 1 : 0);
+    return 0x004300C3; // Bare ret; no Clear_Bib prologue or saved registers.
+}
+
+DEFINE_HOOK(0x00433568, _Building_Mission_Unload_Unit_Factory_Exit, 7)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EBP);
+    const auto type = Extension::Fetch(building->Class);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    const Cell cell = type->CustomUnitFactoryExitCell;
+    R->ESI(static_cast<DWORD>(static_cast<unsigned short>(cell.X)) |
+        (static_cast<DWORD>(static_cast<unsigned short>(cell.Y)) << 16));
+    R->EAX(R->ESP() + 0x24);
+    return 0x0043356F; // Replaces MOV ESI,[EAX+20] / LEA EAX,[ESP+24].
+}
+
+DEFINE_HOOK(0x00433670, _Building_Mission_Unload_Unit_Factory_Dispatch, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EBP);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    const auto peer = building->Radio;
+    if (peer && peer->RTTI == RTTI_UNIT &&
+        !Extension::Fetch(building)->Unit_Factory_Corridor_Clear(static_cast<const UnitClass*>(peer))) {
+        building->Status = 1; // Existing CLEAR_BIB; recheck before acquiring COM references.
+        return 0x004339B3; // Native delay/epilogue, no extra timer or ownership.
+    }
+    return 0; // MOV EBX,[EBP+78] / TEST EBX,EBX and the whole native dispatch.
+}
+
+DEFINE_HOOK(0x0043392D, _Building_Mission_Unload_Unit_Factory_Track_Result, 7)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EBP);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    building->Status = Extension::Fetch(building)->Unit_Factory_Track_Started() ? 3 : 1;
+    // Keep EAX (the native IPersistStream reference) and its Release path intact.
+    // A failed void Force_Track must not strand the tether in LEAVE.
+    return 0x00433934;
+}
+
+DEFINE_HOOK(0x004338AD, _Building_Mission_Unload_Unit_Factory_Native_Destination, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EBP);
+    const auto type = Extension::Fetch(building->Class);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    R->CX(static_cast<WORD>(R->CX() + type->CustomUnitFactoryExitCell.X - 3));
+    R->DX(static_cast<WORD>(R->DX() + type->CustomUnitFactoryExitCell.Y - 1));
+    return 0; // Replay ADD CX,3 / INC DX before the native Assign_Destination call.
+}
+
+DEFINE_HOOK(0x006581C4, _Unit_Assign_Destination_Unit_Factory_Exit, 8)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EDI); // Native RTTI/WeaponsFactory tests already passed.
+    const auto type = Extension::Fetch(building->Class);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    R->CX(static_cast<WORD>(R->CX() + type->CustomUnitFactoryExitCell.X - 3));
+    R->DX(static_cast<WORD>(R->DX() + type->CustomUnitFactoryExitCell.Y - 1));
+    return 0; // Replay ADD ECX,3 / MOV [ESP+2C],CX, then native INC EDX.
+}
+
+DEFINE_HOOK(0x00659526, _Unit_Ready_To_Commence_Unit_Factory_Spawn, 8)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(UnitClass*, unit, ESI); // Still this, before native ESI is reused for anchor Y.
+    const auto building = Map[unit->Get_Cell()].Cell_Building();
+    if (!building) return 0;
+    const auto type = Extension::Fetch(building->Class);
+    if (!Extension::Fetch(building)->Has_Unit_Factory_Exit_Override()) return 0;
+    GET_STACK(DWORD, x, 0x10);
+    GET_STACK(DWORD, y, 0x12);
+    R->EDI((x & 0xFFFF0000u) | static_cast<WORD>(x + type->CustomUnitFactoryExitCell.X - 3));
+    R->ESI((y & 0xFFFF0000u) | static_cast<WORD>(y + type->CustomUnitFactoryExitCell.Y - 1));
+    return 0x0065952E; // Keep ECX (Unit Coord*) and the native (0,1) comparison.
+}
+
 namespace
 {
     bool Custom_Aircraft_Dock_Coord(const BuildingClass* building, Coord& result)
