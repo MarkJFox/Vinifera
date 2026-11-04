@@ -65,6 +65,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ## Changelog
 
+### Aftermath AF-0006
+
+- Add multi-frame HVA animation for Aircraft, including animated rotor sections in the visible model and shadow during flight, hover, shooting, Takeoff and Landing. Render multi-section Aircraft shadows as one connected silhouette on flat terrain and slopes. User runtime validated / complete, with no visible pivot, orbit or offset problems. Parked aircraft use frame 0; single-frame aircraft retain native paths. No new INI tag or saved state. See [AF-0006](AF-0006.md) for the A/B/B1/B2/B3 history.
+
 ### Aftermath AF-0005D5
 
 - Add opt-in `UnitFactoryExitCell` to translate native eastward Weapons Factory geometry while retaining native product/locomotor selection, doors, radio/tether and busy/release behavior. Native output, CustomFoundation single output and D5f vehicle/Mech consecutive clearing are user-confirmed. Hover WeaponsFactory consecutive-output clearing fix implemented, awaiting runtime validation.

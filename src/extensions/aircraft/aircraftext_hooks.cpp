@@ -21,6 +21,7 @@
 #include "buildingext.h"
 #include "extension.h"
 #include "fixedwing.h"
+#include "flylocomotion.h"
 #include "hooker.h"
 #include "house.h"
 #include "mouse.h"
@@ -37,7 +38,11 @@
 #include "unittypeext.h"
 #include "vinifera_globals.h"
 #include "voc.h"
+#include "voxelinit.h"
+#include "voxelobj.h"
 #include "weapontype.h"
+
+#include <deque>
 
 
 /**
@@ -758,6 +763,168 @@ DEFINE_HOOK(0x00408BF3, _AircraftClass_Draw_It_Carry_All_Patch, 0)
     }
 
     return 0x00408C27;
+}
+
+
+namespace
+{
+    bool Aircraft_HVA_Frame(AircraftClass* aircraft, const VoxelObject* voxel, int height, unsigned int& frame)
+    {
+        if (!aircraft || !aircraft->Class || !voxel || voxel != &aircraft->Class->Voxel
+            || !voxel->VoxelLibrary || voxel->VoxelLibrary->Load_Failed()
+            || !voxel->MotionLibrary || voxel->MotionLibrary->Load_Failed()) {
+            return false;
+        }
+
+        // MotionLibrary's Get_Layer_Count returns frames; its other count is sections.
+        const int frame_count = voxel->MotionLibrary->Get_Layer_Count();
+        const int sections = voxel->VoxelLibrary->Get_Layer_Count();
+        // The native shadow-record array at 0x00832740 holds 64 records of 0x3C bytes.
+        if (frame_count <= 1 || sections <= 0 || sections > 64
+            || sections != voxel->MotionLibrary->Get_Section_Count()) {
+            return false;
+        }
+
+        bool active = height > 0;
+        if (!active && aircraft->Locomotion) {
+            const auto fly = FixedWing::Locomotor(aircraft);
+            active = (fly && (fly->IsTakingOff || fly->IsLanding || fly->IsElevating))
+                || aircraft->Locomotion->Is_Moving_Now();
+        }
+
+        const unsigned int rate = aircraft->Class->WalkRate > 0 ? aircraft->Class->WalkRate : 1;
+        frame = active ? (static_cast<unsigned int>(Frame) / rate) % static_cast<unsigned int>(frame_count) : 0;
+        return true;
+    }
+
+    struct AircraftHVAShadowContext {
+        AircraftClass* Aircraft;
+        const VoxelObject* Voxel;
+        unsigned int Frame;
+    };
+
+    const AircraftHVAShadowContext* CurrentAircraftHVAShadow = nullptr;
+
+    struct AircraftHVAShadowScope {
+        AircraftHVAShadowContext Context;
+        DWORD ReturnStack;
+        bool Enabled;
+    };
+
+    // Deque entries retain their addresses across nested pre/post calls.
+    std::deque<AircraftHVAShadowScope> AircraftHVAShadowScopes;
+
+    void Update_Aircraft_HVA_Shadow_Context()
+    {
+        CurrentAircraftHVAShadow = !AircraftHVAShadowScopes.empty() && AircraftHVAShadowScopes.back().Enabled
+            ? &AircraftHVAShadowScopes.back().Context : nullptr;
+    }
+}
+
+
+// FF 97 28 03 00 00 (6): replay the body call once, with its frame and cache key selected.
+DEFINE_HOOK(0x00408F68, _AircraftClass_Draw_It_HVA_Frame_Patch, 6)
+{
+    GET(AircraftClass*, this_ptr, EBP);
+    GET_STACK(const VoxelObject*, voxel, 0x0);
+
+    unsigned int frame;
+    if (this_ptr && Aircraft_HVA_Frame(this_ptr, voxel, this_ptr->HeightAGL, frame)) {
+        R->Stack(0x4, frame);
+        R->Stack(0x8, -1);
+    }
+
+    return 0;
+}
+
+
+// 6A 00 / 56 / 8B CD (5): leave the relative CALL at 0x00408E3D in place.
+DEFINE_HOOK(0x00408E38, _AircraftClass_Draw_It_HVA_Shadow_Pre, 5)
+{
+    GET(AircraftClass*, this_ptr, EBP);
+    GET(int, height, EBX);
+    GET(const VoxelObject*, voxel, ESI);
+
+    unsigned int frame = 0;
+    const bool enabled = Aircraft_HVA_Frame(this_ptr, voxel, height, frame);
+    // Two pushes remain before CALL; ret 20h returns at pre-ESP + 18h.
+    // Inactive entries mask an outer animated context during nested native draws.
+    AircraftHVAShadowScopes.push_back({ { this_ptr, voxel, frame }, R->ESP() + 0x18, enabled });
+    Update_Aircraft_HVA_Shadow_Context();
+    if (enabled) {
+        R->Stack(0x0, -1);
+    }
+
+    return 0;
+}
+
+
+// 8B 55 00 / 53 / 8B CD (6): native shadow ret 20h has already consumed all eight arguments.
+DEFINE_HOOK(0x00408E42, _AircraftClass_Draw_It_HVA_Shadow_Post, 6)
+{
+    GET(AircraftClass*, this_ptr, EBP);
+
+    if (!AircraftHVAShadowScopes.empty()
+        && AircraftHVAShadowScopes.back().Context.Aircraft == this_ptr
+        && AircraftHVAShadowScopes.back().ReturnStack == R->ESP()) {
+        AircraftHVAShadowScopes.pop_back();
+    } else {
+        // Fail closed on an unmatched return rather than retaining another draw's aircraft pointer.
+        AircraftHVAShadowScopes.clear();
+    }
+    Update_Aircraft_HVA_Shadow_Context();
+
+    // Replay all six position-independent bytes; Syringe's padded site+5 reaches 0x00408E48.
+    return 0;
+}
+
+
+// 8D 4C 24 58 / 68 E8 C6 74 00 (9): after native Reset, before single-section preparation.
+DEFINE_HOOK(0x00635E96, _AircraftClass_HVA_Shadow_Sections_Patch, 9)
+{
+    GET(TechnoClass*, this_ptr, EBX);
+    GET(const VoxelObject*, voxel, EBP);
+
+    const auto context = CurrentAircraftHVAShadow;
+    if (!context || context->Aircraft != this_ptr || context->Voxel != voxel) {
+        return 0;
+    }
+
+    GET_STACK(const Matrix3D*, matrix, 0xF4);
+    const auto motion = voxel->MotionLibrary;
+    const int sections = motion->Get_Section_Count();
+    const auto matrices = &motion->Get_Layer_Matrices();
+    const size_t offset = static_cast<size_t>(context->Frame) * sections;
+    const auto& native_camera = *reinterpret_cast<const Matrix3D*>(0x0074C6F8);
+    // Flatten the posed sections in common model space before aircraft facing, ramp and view.
+    const Matrix3D camera = native_camera * *matrix;
+    using PrepareShadow = void (__fastcall*)(VoxelLibraryClass*, int, int, const Matrix3D&, const Matrix3D&, const Vector3&);
+
+    for (int section = 0; section < sections; ++section) {
+        const auto& transform = matrices[offset + section];
+        reinterpret_cast<PrepareShadow>(0x006661C0)(voxel->VoxelLibrary, section, 0, camera, transform, VoxelShadowLightSource);
+    }
+
+    // Finish once for the combined silhouette; native blitting, clipping and Z placement follow.
+    return 0x00635ECB;
+}
+
+
+// 8B 0D 04 82 74 00 (6): direct shadow blit, after native Get_Z_Adjustment.
+DEFINE_HOOK(0x00635F34, _AircraftClass_HVA_Shadow_Z_Gradient_Patch, 6)
+{
+    GET(TechnoClass*, this_ptr, EBX);
+    GET(const VoxelObject*, voxel, EBP);
+
+    const auto context = CurrentAircraftHVAShadow;
+    if (context && context->Aircraft == this_ptr && context->Voxel == voxel) {
+        // Cache key -1 selects this direct path, which otherwise hardcodes ZGRAD_GROUND.
+        // Match the normal cached shadow's virtual gradient at 0x00636223.
+        // ESP+0=gradient, +4=alpha, +8=warp; EAX retains native Get_Z_Adjustment.
+        R->Stack(0x0, this_ptr->Get_Z_Gradient());
+    }
+
+    return 0;
 }
 
 
