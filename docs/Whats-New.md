@@ -75,6 +75,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### Aftermath AF-0005D3
 
+- Document D3a docking-height research: native touchdown and service use terrain-relative height, so `DockingCell#=X,Y,Z` requires a broader landing/service contract and is not implemented. Existing X/Y support is unchanged; see [AF-0005D3](AF-0005D3.md#af-0005d3a--z-offset-research-mit-erreichtem-abbruchkriterium).
 - Add custom foundations for single-aircraft helipads using the combined `Factory=AircraftType`, `Helipad=yes`, `UnitReload=yes` contract. Optional ArtINI `CustomDockCell=X,Y` selects one occupied internal service cell; absent or invalid values require an occupied native center. Normal aircraft and FixedWing use the custom dock point. Locally built and core-runtime-confirmed by the user, including reload, save/load and production/service after load; see [AF-0005D3](AF-0005D3.md) for remaining regression cases.
 - D3b permits native `BibShape` graphics only for otherwise valid custom-foundation helipads; `Bib=yes`/`IsBibbed` remains excluded. Both cases are runtime-confirmed by the user. Preserve native Bib positioning and save basis `0x180000`.
 
