@@ -23,15 +23,19 @@
 #include "vinifera_util.h"
 #include "spritecollection.h"
 #include "vinifera_saveload.h"
+#include "vinifera_globals.h"
 #include "asserthandler.h"
 #include "animtype.h"
 #include "debughandler.h"
 #include "findmake.h"
 #include "rules.h"
+#include "jumpjetlocomotion.h"
+#include "wwcrc.h"
 #include "spawner.h"
 #include "technotype.h"
 #include "tibsun_globals.h"
 #include "unittype.h"
+#include "unittypeext.h"
 #include "vinifera_saveload.h"
 #include "vinifera_util.h"
 
@@ -94,6 +98,7 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const TechnoTypeClass *this_p
     _JumpjetWobbleDeviation(std::numeric_limits<int>::min()),
     _JumpjetCloakDetectionRadius(std::numeric_limits<int>::min()),
     JumpjetNoWobbles(false),
+    IsBalloonHover(false),
     IsNaval(false),
     BuiltAt(),
     BuildTimeMultiplier(1.0f),
@@ -400,6 +405,14 @@ bool TechnoTypeClassExtension::Read_INI(CCINIClass &ini)
     _JumpjetWobbleDeviation = ini.Get_Int(ini_name, "JumpjetWobbleDeviation", _JumpjetWobbleDeviation);
     _JumpjetCloakDetectionRadius = ini.Get_Int(ini_name, "JumpjetCloakDetectionRadius", _JumpjetCloakDetectionRadius);
     JumpjetNoWobbles = ini.Get_Bool(ini_name, "JumpjetNoWobbles", JumpjetNoWobbles);
+    IsBalloonHover = ini.Get_Bool(ini_name, "BalloonHover", IsBalloonHover);
+    if (IsBalloonHover && Vinifera_DeveloperMode) {
+        if (Supports_Balloon_Hover()) {
+            DEBUG_INFO("[BALLOON] type={} configuration enabled\n", ini_name);
+        } else {
+            DEBUG_WARNING("[BALLOON] type={} ignored: requires a UnitType with the Jumpjet locomotor\n", ini_name);
+        }
+    }
 
     IsNaval = ini.Get_Bool(ini_name, "Naval", IsNaval);
 
@@ -548,4 +561,37 @@ int TechnoTypeClassExtension::Get_Jumpjet_Cloak_Detection_Radius() const {
         return _JumpjetCloakDetectionRadius;
     }
     return Rule->JumpjetCloakDetectionRadius;
+}
+
+
+bool TechnoTypeClassExtension::Supports_Balloon_Hover() const
+{
+    const auto type = This_Const();
+    return IsBalloonHover && type && type->RTTI == RTTI_UNITTYPE &&
+        type->Locomotor == __uuidof(JumpjetLocomotionClass);
+}
+
+
+unsigned TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(unsigned native_crc)
+{
+    // FRAMESYNC is infrequent; derive from current types after INI/load without a cache.
+    CRCEngine config;
+    bool present = false;
+    for (int i = 0; i < UnitTypes.Count(); ++i) {
+        const auto type = UnitTypes[i];
+        const auto ext = Extension::Fetch(type);
+        if (ext && ext->Supports_Balloon_Hover()) {
+            present = true;
+            config(static_cast<int>(type->HeapID));
+            config(static_cast<unsigned>(CRCEngine::CRC_String(type->IniName.c_str(), 0)));
+            config(ext->IsBalloonHover);
+        }
+    }
+    if (!present) return native_crc;
+
+    CRCEngine combined;
+    combined(native_crc);
+    combined(static_cast<unsigned>(0x41463741)); // AF7A domain.
+    combined(static_cast<unsigned>(config()));
+    return static_cast<unsigned>(combined());
 }

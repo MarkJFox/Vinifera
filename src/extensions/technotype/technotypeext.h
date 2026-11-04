@@ -49,6 +49,9 @@ public:
     static ProductionFlags Get_Production_Flags(const TechnoTypeClass* ttype) { return Get_Production_Flags(Extension::Fetch(ttype)); }
     static ProductionFlags Get_Production_Flags(const TechnoTypeClassExtension* ttype_ext);
 
+    bool Supports_Balloon_Hover() const;
+    static unsigned Balloon_Hover_Sync_CRC(unsigned native_crc);
+
 public:
     /**
      *  This is the sound effect to play when the unit is cloaking.
@@ -351,6 +354,9 @@ public:
      *  Whether the jumpjet unit doesn't wobble.
      */
     bool JumpjetNoWobbles;
+
+    // AF-0007A applies only to UnitTypes using the registered Jumpjet locomotor.
+    bool IsBalloonHover;
 
     /**
      *  If this techno "naval"? For buildings, this usually means this is a naval yard,

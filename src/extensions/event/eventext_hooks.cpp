@@ -32,6 +32,7 @@
 #include "sessionext.h"
 #include "syringe.h"
 #include "tibsun_functions.h"
+#include "technotypeext.h"
 #include "version.h"
 #include "vinifera_globals.h"
 
@@ -42,7 +43,8 @@
  */
 DEFINE_HOOK(0x005B35C0, _Send_FrameSync_Custom_Foundation_CRC, 5)
 {
-    R->EAX(BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC));
+    R->EAX(TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
+        BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC)));
     return 0x005B35C5;
 }
 
@@ -408,7 +410,8 @@ static RetcodeType _Process_Receive_Packet(ConnManClass* net, char* multi_packet
      *  but we must check the ScenarioCRC value.
      */
     else if (event->Type == EVENT_FRAMESYNC) {
-        if (event->Data.FrameInfo.CRC != BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC)) {
+        if (event->Data.FrameInfo.CRC != TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
+            BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC))) {
             return (RC_SCENARIO_MISMATCH);
         }
         their[index].timing = *timer;

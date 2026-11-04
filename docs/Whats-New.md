@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0007A adds saved Rules `BalloonHover=yes` for UnitTypes using the existing Jumpjet locomotor. The save basis is now `0x1C0000`; start a new game. Older extension blobs are rejected even if the new bool fits existing padding. See [AF-0007A](AF-0007A.md).
 - Aftermath AF-0005D5 adds saved Art `UnitFactoryExitCell=X,Y` for eastward ground Weapons Factories on native or custom foundations. The save basis is now `0x1B0000`; start a new game. See [AF-0005D5](AF-0005D5.md).
 - Aftermath AF-0005D4b lets ground repair buildings define one occupied Art `UnitRepairCell=X,Y` on native or custom foundations, using native Drive visitors, scalar reservation and repair economy. Native foundations keep their native exit; custom foundations use an outer exit. Invalid native points are ignored without changing the foundation; invalid custom contracts retain the safe foundation fallback. Save basis remains `0x1A0000`. Custom off-center repair is user-confirmed; native support and full runtime acceptance remain pending. See [AF-0005D4b](AF-0005D4b.md).
 - Aftermath AF-0005D3c2 enables supported FixedWing Aircraft on MultiDock helipads, with slot-specific approach/landing, mixed normal/FixedWing capacity, shared reload, CAP rearm/resume and opposite-direction fallback per reserved slot. User runtime tests confirmed these scenarios and approach save/load; save basis remains `0x190000`. See [AF-0005D3c2](AF-0005D3c2.md).
@@ -64,6 +65,14 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0007A1
+
+- Complete BalloonHover factory clearance as part of AF-0007A: one deterministic nearby flight followed by existing queued navigation or distinct available points near the rally center. Preserve ArchiveTarget and existing queues; consider current and planned Balloon positions without a new saved phase, RNG, hook or saveversion change. The user confirms production dispersal and resolved overlap both without and with a rally point. Tested movement/production flows are runtime accepted; unconfirmed special cases remain open. See [AF-0007A1](AF-0007A.md#af-0007a1--räumliche-trennung-nach-dachstart).
+
+### Aftermath AF-0007A
+
+- Complete opt-in UnitClass BalloonHover using the existing NewJumpjet locomotor, including AF-0007A1 factory clearance/dispersal. The user confirms controlled ascent, permanent hover, Move/Stop without unwanted landing, rotor animation in movement/idle with WalkRate/IdleRate, vertical factory roof departure, native door/radio/tether release, consecutive production and a free normal vehicle exit. Default `no` retains ordinary Jumpjet behavior. The saved flag participates in concrete UnitType diagnostic CRC and existing send/receive FRAMESYNC checks; save basis is `0x1C0000`. Save/Load, multiplayer and other unconfirmed special cases remain open. Numerous PLACE events at 10-credit production cost are consistent with repeated placement attempts during factory release; no separate defect was established. See [AF-0007A](AF-0007A.md) for the accepted scope, limitations and remaining checks.
 
 ### Aftermath AF-0006
 

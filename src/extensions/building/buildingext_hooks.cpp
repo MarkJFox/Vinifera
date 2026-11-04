@@ -41,6 +41,7 @@
 #include "infantry.h"
 #include "infantrytype.h"
 #include "jumpjetlocomotion.h"
+#include "newjumpjetlocomotion.h"
 #include "map.h"
 #include "mouse.h"
 #include "rules.h"
@@ -2487,6 +2488,57 @@ bool Should_Open_Roof(BuildingClass* building)
         }
     }
     return false;
+}
+
+
+static const ShapeSet* Balloon_Roof_Door(BuildingClass* building)
+{
+    const auto shape = Extension::Fetch(building->Class)->RoofDoorAnim;
+    return shape ? shape : building->Class->DoorAnim;
+}
+
+
+static bool Uses_Balloon_Roof(BuildingClass* building)
+{
+    const auto product = building->Contact_With_Whom();
+    return building->Get_Mission() == MISSION_UNLOAD && product && product->RTTI == RTTI_UNIT &&
+        NewJumpjetLocomotionClass::Balloon_Hover_Locomotor(static_cast<FootClass*>(product));
+}
+
+
+// Native door drawing already uses the factory Door timer and frame count.
+// 8B 85 20 02 00 00: EBP=building, no stack mutation; skip the normal DoorAnim test.
+DEFINE_HOOK(0x00427CD8, _BuildingClass_Balloon_Roof_Door_Check, 6)
+{
+    GET(BuildingClass*, building, EBP);
+    if (!Uses_Balloon_Roof(building)) return 0;
+    return Balloon_Roof_Door(building) ? 0x00427CEC : 0x00427E27;
+}
+
+
+// 8B 91 C8 07 00 00: replace only the shape pointer; native draw arguments remain intact.
+DEFINE_HOOK(0x00427DF5, _BuildingClass_Balloon_Roof_Door_Image, 6)
+{
+    GET(BuildingClass*, building, EBP);
+    if (!Uses_Balloon_Roof(building)) return 0;
+    R->EDX(Balloon_Roof_Door(building));
+    return 0x00427DFB;
+}
+
+
+// CLOSE, after Is_Door_Closed and before native Enter_Idle_Mode can allow another product.
+// 8B 55 00 / BB 01 00 00 00: EBP=building; replay all eight position-independent bytes.
+DEFINE_HOOK(0x0043399D, _BuildingClass_Balloon_Roof_Closed, 8)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, EBP);
+    const auto product = building->Contact_With_Whom();
+    if (product && product->RTTI == RTTI_UNIT) {
+        if (const auto loco = NewJumpjetLocomotionClass::Balloon_Hover_Locomotor(static_cast<FootClass*>(product))) {
+            loco->Finish_Balloon_Factory_Exit(building);
+        }
+    }
+    return 0;
 }
 
 

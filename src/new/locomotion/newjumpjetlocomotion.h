@@ -13,6 +13,7 @@
 #include "locomotion.h"
 #include "vinifera_defines.h"
 
+class BuildingClass;
 
 class DECLSPEC_UUID(CLSID_NEWJUMPJET_LOCOMOTOR)
 NewJumpjetLocomotionClass : public LocomotionClass
@@ -42,6 +43,7 @@ NewJumpjetLocomotionClass : public LocomotionClass
         IFACEMETHOD_(void, Move_To)(Coord to) override;
         IFACEMETHOD_(void, Stop_Moving)() override;
         IFACEMETHOD_(void, Do_Turn)(DirType coord) override;
+        IFACEMETHOD_(void, Unlimbo)() override;
         IFACEMETHOD_(LayerType, In_Which_Layer)() override;
         IFACEMETHOD_(bool, Is_Moving_Now)() override;
         IFACEMETHOD_(void, Mark_All_Occupation_Bits)(MarkType mark) override;
@@ -69,8 +71,15 @@ NewJumpjetLocomotionClass : public LocomotionClass
         void Movement_AI();
         Coord Closest_Free_Spot(Coord const & to) const;
         int Desired_Flight_Level() const;
+        static NewJumpjetLocomotionClass* Balloon_Hover_Locomotor(FootClass* foot);
+        void Finish_Balloon_Factory_Exit(BuildingClass* factory);
 
     private:
+        bool Is_Balloon_Hover() const;
+        BuildingClass* Balloon_Factory() const;
+        void Complete_Balloon_Move();
+        void Release_Balloon_Factory(BuildingClass* factory);
+
         /**
          *  Turn rate of the jumpjet unit.
          */
