@@ -41,6 +41,50 @@
 #include "tibsun_globals.h"
 #include "vinifera_globals.h"
 
+// Native occupancy and radar checks have run. Waive only the allowed overlay;
+// continue through native bridge/ramp and Ground build/speed checks.
+DEFINE_HOOK(0x004524AE, _Cell_Clear_To_Build_Replace_Own_Wall, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(CellClass*, cell, EDI);
+    GET(BuildingTypeClass*, type, EBP);
+    GET_STACK(HouseClass*, house, 0x24);
+    LandType land;
+    return BuildingTypeClassExtension::Wall_Replacement_Land(cell, type, house, land) ? 0x004525C8 : 0;
+}
+
+// Reuse both native Ground lookups with the terrain under the permitted wall.
+// These hooks neither clear an overlay nor edit CellClass::Land.
+DEFINE_HOOK(0x00452600, _Cell_Clear_To_Build_Wall_Underlying_Build_Land, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(CellClass*, cell, EDI);
+    GET(BuildingTypeClass*, type, EBP);
+    GET_STACK(HouseClass*, house, 0x24);
+    LandType land;
+    if (!BuildingTypeClassExtension::Wall_Replacement_Land(cell, type, house, land)) return 0;
+    GET_STACK(unsigned, saved_edi, 0x0);
+    GET_STACK(unsigned, saved_esi, 0x4);
+    R->EAX(land);
+    R->EDI(saved_edi);
+    R->ESI(saved_esi);
+    R->ESP(R->ESP() + 8); // Replay the displaced pop edi / pop esi.
+    return 0x00452605; // Outside the five-byte patch; pop ebp and native lookup follow.
+}
+
+DEFINE_HOOK(0x00452672, _Cell_Clear_To_Build_Wall_Underlying_Speed_Land, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(CellClass*, cell, EDI);
+    GET(BuildingTypeClass*, type, EBP);
+    GET_STACK(HouseClass*, house, 0x24);
+    LandType land;
+    if (!BuildingTypeClassExtension::Wall_Replacement_Land(cell, type, house, land)) return 0;
+    R->EAX(land);
+    R->ECX(R->ECX() + static_cast<unsigned>(land) * 8); // displaced lea ecx,[ecx+eax*8]
+    return 0x00452678;
+}
+
 // No prologue has run. The added success path uses only the native bare ret 8.
 DEFINE_HOOK(0x00456690, _Cell_Has_Wall_Or_Gate_Building_Connections, 5)
 {

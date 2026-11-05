@@ -19,6 +19,8 @@
 #include "debughandler.h"
 #include "extension.h"
 #include "infantrytype.h"
+#include "house.h"
+#include "isotiletype.h"
 #include "map.h"
 #include "mouse.h"
 #include "overlaytype.h"
@@ -173,7 +175,8 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     CustomUnitFactoryExitCellSet(false),
     CustomUnitFactoryExitCell(0, 0),
     FixedWingLandingDir(FACING_NONE),
-    ConnectsToWalls(false)
+    ConnectsToWalls(false),
+    CanReplaceWalls(false)
 {
     std::fill(std::begin(AircraftDockCells), std::end(AircraftDockCells), Cell(0, 0));
     Reset_Custom_Foundation();
@@ -1366,6 +1369,7 @@ void BuildingTypeClassExtension::Rebuild_Custom_Foundation_Radar(const RadarClas
 void BuildingTypeClassExtension::Read_Wall_Connections(CCINIClass& ini)
 {
     ConnectsToWalls = ini.Get_Bool(Name(), "ConnectsToWalls", ConnectsToWalls);
+    CanReplaceWalls = ini.Get_Bool(Name(), "CanReplaceWalls", CanReplaceWalls);
     Invalidate_Foundation_Sync_CRC();
     char buffer[WallConnectionBufferSize] = {};
     // Get_String trims its result and resolves inherited sections.
@@ -1417,6 +1421,9 @@ void BuildingTypeClassExtension::Finalize_Wall_Connections()
     if (ConnectsToWalls && (found == WallConnectionOverlays.end() || found->second.empty())) {
         DEBUG_WARNING("[WALLCONNECTION] type={} ConnectsToWalls=yes requires valid WallConnection.Types; no additional connections enabled.\n", Name());
     }
+    if (CanReplaceWalls && (found == WallConnectionOverlays.end() || found->second.empty())) {
+        DEBUG_WARNING("[WALLCONNECTION] type={} CanReplaceWalls=yes requires valid WallConnection.Types; no wall replacement enabled.\n", Name());
+    }
     Invalidate_Foundation_Sync_CRC();
 }
 
@@ -1437,7 +1444,7 @@ bool BuildingTypeClassExtension::Validate_Wall_Connections_After_Load()
 bool BuildingTypeClassExtension::Has_Wall_Connection_Config() const
 {
     const auto found = WallConnectionOverlays.find(this);
-    return ConnectsToWalls || (found != WallConnectionOverlays.end() && !found->second.empty());
+    return ConnectsToWalls || CanReplaceWalls || (found != WallConnectionOverlays.end() && !found->second.empty());
 }
 
 void BuildingTypeClassExtension::Refresh_Wall_Connections_After_Load()
@@ -1461,6 +1468,132 @@ void BuildingTypeClassExtension::Wall_Connections_CRC(CRCEngine& crc) const
     if (found != WallConnectionOverlays.end()) {
         for (int id : found->second) crc(id);
     }
+    // Preserve AF-0007A's CRC stream when the new opt-in is absent.
+    if (CanReplaceWalls) {
+        crc(static_cast<unsigned>(0x41463752)); // AF7R: owned wall replacement.
+        crc(static_cast<int>(CanReplaceWalls));
+    }
+}
+
+bool BuildingTypeClassExtension::Can_Replace_Wall(const CellClass* cell, const HouseClass* house) const
+{
+    const auto type = This_Const();
+    // Overlay/tile converters do not leave a Building on the normal Unlimbo path.
+    // The global legacy tower keeps all of its original placement semantics.
+    if (!CanReplaceWalls || !cell || !house || !type || type == Rule->WallTower ||
+        type->ToOverlay || type->ToTile || cell->Owner == HOUSE_NONE || cell->Owner != house->HeapID) return false;
+    const auto found = WallConnectionOverlays.find(this);
+    // The canonical whitelist has already excluded non-walls and fence conversions.
+    return found != WallConnectionOverlays.end() && cell->Overlay >= OVERLAY_FIRST &&
+        cell->Overlay < OverlayTypes.Count() && OverlayTypes[cell->Overlay]->IsWall &&
+        std::binary_search(found->second.begin(), found->second.end(), static_cast<int>(cell->Overlay));
+}
+
+bool BuildingTypeClassExtension::Wall_Replacement_Land(const CellClass* cell, const BuildingTypeClass* type,
+    const HouseClass* house, LandType& land)
+{
+    if (!type) return false;
+    const auto ext = Extension::Fetch(type);
+    if (!ext || !ext->Can_Replace_Wall(cell, house)) return false;
+    // Same terrain source as Recalc_Attributes with Overlay=NONE (0045383B).
+    // Read it without hiding the overlay or changing map/zone/preview state.
+    land = cell->ITType >= ISOTILE_FIRST && cell->ITType < IsoTileTypes.Count() ?
+        IsoTileTypes[cell->ITType]->Land_Type(cell->SubTile) : LAND_CLEAR;
+    return land >= LAND_FIRST && land < LAND_COUNT;
+}
+
+namespace
+{
+    bool Wall_Replacement_Cells(const BuildingTypeClass* type, const Cell& origin, std::vector<CellClass*>& cells)
+    {
+        const Cell* mask = type->Occupy_List(false);
+        if (!mask) return false;
+        for (int i = 0; i < BuildingTypeClassExtension::CustomFoundationStorageSize; ++i) {
+            if (mask[i] == REFRESH_EOL) {
+                std::sort(cells.begin(), cells.end(), [](const CellClass* a, const CellClass* b) {
+                    return a->CellID.Y != b->CellID.Y ? a->CellID.Y < b->CellID.Y : a->CellID.X < b->CellID.X;
+                });
+                cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+                return !cells.empty();
+            }
+            const int x = int(origin.X) + mask[i].X;
+            const int y = int(origin.Y) + mask[i].Y;
+            if (x < 0 || x >= MAP_CELL_W || y < 0 || y >= MAP_CELL_H) return false;
+            const Cell absolute(x, y);
+            if (!Map.In_Radar(absolute) || !Map.Array[y * MAP_CELL_W + x]) return false;
+            cells.push_back(Map.Array[y * MAP_CELL_W + x]);
+        }
+        return false;
+    }
+}
+
+bool BuildingTypeClassExtension::Validate_Wall_Replacement(const BuildingClass* building, const Coord& position)
+{
+    return Validate_Wall_Replacement_Type(building->Class, Cell(position), building->House);
+}
+
+bool BuildingTypeClassExtension::Validate_Wall_Replacement_Type(const BuildingTypeClass* type, const Cell& origin,
+    const HouseClass* house)
+{
+    const auto ext = Extension::Fetch(type);
+    if (!ext || !ext->CanReplaceWalls || type == Rule->WallTower) return true;
+    std::vector<CellClass*> cells;
+    if (!Wall_Replacement_Cells(type, origin, cells)) return false;
+    bool has_wall = false;
+    for (const auto cell : cells) {
+        if (cell->Overlay >= OVERLAY_FIRST && cell->Overlay < OverlayTypes.Count() && OverlayTypes[cell->Overlay]->IsWall) {
+            if (!ext->Can_Replace_Wall(cell, house)) return false;
+            has_wall = true;
+        }
+    }
+    if (!has_wall) return true;
+    // Validate every occupied cell, even for a type with native Insignificant=yes.
+    // Cell hooks waive only the matching overlay and substitute its underlying land.
+    for (const auto cell : cells) {
+        if (!cell->Is_Clear_To_Build(type->Speed, type, house)) return false;
+    }
+    return true; // The caller continues through all native type/Unlimbo checks.
+}
+
+bool BuildingTypeClassExtension::Has_Wall_Replacement(const BuildingClass* building, const Coord& position)
+{
+    const auto ext = Extension::Fetch(building->Class);
+    if (!ext || !ext->CanReplaceWalls || building->Class == Rule->WallTower) return false;
+    std::vector<CellClass*> cells;
+    if (!Wall_Replacement_Cells(building->Class, Cell(position), cells)) return false;
+    return std::any_of(cells.begin(), cells.end(), [ext, building](const CellClass* cell) {
+        return ext->Can_Replace_Wall(cell, building->House);
+    });
+}
+
+void BuildingTypeClassExtension::Commit_Wall_Replacement(const BuildingClass* building)
+{
+    const auto type = building->Class;
+    const auto ext = Extension::Fetch(type);
+    if (!ext || !ext->CanReplaceWalls || type == Rule->WallTower || !building->IsDown || building->IsInLimbo) return;
+    std::vector<CellClass*> cells;
+    if (!Wall_Replacement_Cells(type, building->Get_Cell(), cells)) return;
+    cells.erase(std::remove_if(cells.begin(), cells.end(), [ext, building](const CellClass* cell) {
+        return !ext->Can_Replace_Wall(cell, building->House);
+    }), cells.end());
+    if (cells.empty()) return;
+
+    for (const auto cell : cells) cell->Redraw_Overlay();
+    // The parent Unlimbo has succeeded; the normal Building path has no later
+    // failure exit. Remove the whole footprint before invoking any map updates.
+    // Do not Sell_Wall (refund) or Reduce_Wall (damage-stage propagation).
+    for (const auto cell : cells) {
+        cell->Overlay = OVERLAY_NONE;
+        cell->OverlayData = 0;
+        cell->Owner = HOUSE_NONE;
+    }
+    for (const auto cell : cells) {
+        cell->Recalc_Attributes();
+        Map.Update_Cell_Zone(cell->CellID);
+        Map.Update_Cell_Subzones(cell->CellID);
+        Map.Radar_Cell(cell->CellID);
+    }
+    Refresh_Wall_Connections(building, building->Get_Cell(), true);
 }
 
 bool BuildingTypeClassExtension::Cell_Connects_To_Wall(const CellClass* cell, OverlayType overlay)
@@ -1478,10 +1611,10 @@ bool BuildingTypeClassExtension::Cell_Connects_To_Wall(const CellClass* cell, Ov
     return false;
 }
 
-void BuildingTypeClassExtension::Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin)
+void BuildingTypeClassExtension::Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin, bool replacement)
 {
     const auto ext = Extension::Fetch(building->Class);
-    if (!ext || !ext->ConnectsToWalls) return;
+    if (!ext || (!ext->ConnectsToWalls && !(replacement && ext->CanReplaceWalls))) return;
     const auto found = WallConnectionOverlays.find(ext);
     if (found == WallConnectionOverlays.end() || found->second.empty()) return;
     const Cell* mask = building->Class->Occupy_List(false);

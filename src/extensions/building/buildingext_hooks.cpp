@@ -69,6 +69,37 @@
 
 #include <algorithm>
 
+// Phase A has no map writes. No native prologue has run at this entry.
+DEFINE_HOOK(0x00429E20, _Building_Unlimbo_Validate_Wall_Replacement, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ECX);
+    GET_STACK(const Coord*, position, 0x4);
+    if (BuildingTypeClassExtension::Validate_Wall_Replacement(building, *position)) return 0;
+    R->EAX(0);
+    return 0x0042AAF4; // bare ret 8; no frame or saved registers to unwind.
+}
+
+// Can_Enter_Cell returned MOVE_OK. Skip the legacy pre-placement wall removal
+// for this replacement and preserve BL and the saved success byte.
+DEFINE_HOOK(0x00429E5C, _Building_Unlimbo_Defer_Wall_Replacement, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    GET(const Coord*, position, EBP);
+    return BuildingTypeClassExtension::Has_Wall_Replacement(building, *position) ? 0x0042A014 : 0;
+}
+
+// Phase B: Techno::Unlimbo has returned success. The remaining normal Building
+// path has only success exits (including IsActive=false); no rollback is needed.
+DEFINE_HOOK(0x0042A3A1, _Building_Unlimbo_Commit_Wall_Replacement, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    BuildingTypeClassExtension::Commit_Wall_Replacement(building);
+    return 0; // Replay mov edx,[esi+220h].
+}
+
 // Occupation and native Unlimbo have succeeded before the gate-update block.
 DEFINE_HOOK(0x0042A8F7, _Building_Unlimbo_Refresh_Wall_Connections, 6)
 {

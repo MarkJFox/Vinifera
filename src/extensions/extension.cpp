@@ -2016,8 +2016,8 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // Optional WallTower and the explicitly streamed wall overlay IDs require a new save contract.
-    unsigned version = 0x1E0000;
+    // AF-0007B adds saved CanReplaceWalls, even if the bool fits existing padding.
+    unsigned version = 0x1F0000;
 
     /**
      *  For debug builds, offset the save file version.

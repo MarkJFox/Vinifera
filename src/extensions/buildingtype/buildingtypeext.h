@@ -15,6 +15,7 @@
 class RadarClass;
 class CellClass;
 class BuildingClass;
+class HouseClass;
 
 
 class DECLSPEC_UUID(UUID_BUILDINGTYPE_EXTENSION)
@@ -52,7 +53,14 @@ public:
     static bool Validate_Wall_Connections_After_Load();
     static void Refresh_Wall_Connections_After_Load();
     static bool Cell_Connects_To_Wall(const CellClass* cell, OverlayType overlay);
-    static void Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin);
+    static void Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin, bool replacement = false);
+    bool Can_Replace_Wall(const CellClass* cell, const HouseClass* house) const;
+    static bool Wall_Replacement_Land(const CellClass* cell, const BuildingTypeClass* type,
+        const HouseClass* house, LandType& land);
+    static bool Validate_Wall_Replacement(const BuildingClass* building, const Coord& position);
+    static bool Validate_Wall_Replacement_Type(const BuildingTypeClass* type, const Cell& origin, const HouseClass* house);
+    static bool Has_Wall_Replacement(const BuildingClass* building, const Coord& position);
+    static void Commit_Wall_Replacement(const BuildingClass* building);
 
     // AF-0005B: one immutable, type-owned mask for both Occupy_List modes.
     static constexpr int CustomFoundationStorageSize = 120;
@@ -205,4 +213,5 @@ public:
     Cell CustomUnitFactoryExitCell;
     FacingType FixedWingLandingDir;
     bool ConnectsToWalls;
+    bool CanReplaceWalls;
 };

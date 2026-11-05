@@ -28,6 +28,18 @@
 #include "vinifera_globals.h"
 #include "weapontype.h"
 
+// The AI's native flush retains its entire occupier/evacuation loop. It does
+// not remove walls; final validation and commit still belong to Unlimbo.
+DEFINE_HOOK(0x004401B9, _BuildingType_Flush_For_Placement_Replace_Own_Wall, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingTypeClass*, type, EBX);
+    GET(CellClass*, cell, EAX);
+    GET_STACK(HouseClass*, house, 0x2C);
+    const auto ext = Extension::Fetch(type);
+    return ext && ext->Can_Replace_Wall(cell, house) ? 0x004401DC : 0;
+}
+
 /**
  *  AF-0005C. These entry hooks have not executed any native prologue.
  *  Inactive types replay the displaced instructions and stay fully native.
@@ -143,6 +155,13 @@ DEFINE_HOOK(0x00442EA0, _BuildingTypeClass_Legal_Placement_Custom_Foundation_Bou
         (position == nullptr || !ext->Custom_Foundation_In_Radar(*position))) {
         R->EAX(0);
         return 0x00442EBE; // ret 8; no native prologue/arguments have been changed.
+    }
+    // Also cover native Insignificant types, whose Legal_Placement otherwise
+    // returns true before visiting any cells. Preserve the original bounds guard.
+    GET_STACK(const HouseClass*, house, 0x8);
+    if (position && !BuildingTypeClassExtension::Validate_Wall_Replacement_Type(type, *position, house)) {
+        R->EAX(0);
+        return 0x00442EBE;
     }
     return 0;
 }
