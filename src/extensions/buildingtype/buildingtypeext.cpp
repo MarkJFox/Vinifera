@@ -12,13 +12,16 @@
 #include "buildingtypeext.h"
 
 #include "aircrafttype.h"
+#include "building.h"
 #include "buildingtype.h"
 #include "ccini.h"
+#include "cell.h"
 #include "debughandler.h"
 #include "extension.h"
 #include "infantrytype.h"
 #include "map.h"
 #include "mouse.h"
+#include "overlaytype.h"
 #include "radar.h"
 #include "rules.h"
 #include "scenario.h"
@@ -39,16 +42,46 @@
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace
 {
     bool FoundationSyncCRCValid = false;
     bool FoundationSyncCRCPresent = false;
     unsigned FoundationSyncCRC = 0;
+    bool FoundationSyncWallTowerDisabled = false;
 
     // Parser metadata only, outside the raw-saved extension and CRC. Preserve
     // the last applicable INI request when a later pass omits this type.
     std::map<const BuildingTypeClassExtension*, bool> SingleDockAliasRequests;
+
+    // Persistent IDs are streamed explicitly after the raw extension, never as vector pointers.
+    constexpr int WallConnectionBufferSize = 4096;
+    constexpr int MaxWallConnectionTypes = WallConnectionBufferSize / 2;
+    std::map<const BuildingTypeClassExtension*, std::vector<int>> WallConnectionOverlays;
+
+    bool Is_Connection_Wall(int id)
+    {
+        if (id < 0 || id >= OverlayTypes.Count() || !OverlayTypes[id]->IsWall) return false;
+        for (int i = 0; i < BuildingTypes.Count(); ++i) {
+            const auto type = BuildingTypes[i];
+            if (type->ToOverlay == OverlayTypes[id] &&
+                (type->IsLaserFence || type->IsLaserFencePost || type->IsFirestormWall)) return false;
+        }
+        return true;
+    }
+
+    bool Read_Wall_ID(IStream* stream, int& value)
+    {
+        ULONG bytes = 0;
+        return SUCCEEDED(stream->Read(&value, sizeof(value), &bytes)) && bytes == sizeof(value);
+    }
+
+    bool Write_Wall_ID(IStream* stream, int value)
+    {
+        ULONG bytes = 0;
+        return SUCCEEDED(stream->Write(&value, sizeof(value), &bytes)) && bytes == sizeof(value);
+    }
 
     // Derived UI state only. Never part of the raw-saved type extension or its CRC.
     const RadarClass* FoundationRadarOwner = nullptr;
@@ -139,7 +172,8 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     CustomUnitRepairCell(0, 0),
     CustomUnitFactoryExitCellSet(false),
     CustomUnitFactoryExitCell(0, 0),
-    FixedWingLandingDir(FACING_NONE)
+    FixedWingLandingDir(FACING_NONE),
+    ConnectsToWalls(false)
 {
     std::fill(std::begin(AircraftDockCells), std::end(AircraftDockCells), Cell(0, 0));
     Reset_Custom_Foundation();
@@ -167,6 +201,7 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const NoInitClass &noinit
 BuildingTypeClassExtension::~BuildingTypeClassExtension()
 {
     SingleDockAliasRequests.erase(this);
+    WallConnectionOverlays.erase(this);
     Clear_Foundation_Radar();
     Invalidate_Foundation_Sync_CRC();
     BuildingTypeExtensions.Delete(this);
@@ -203,6 +238,16 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
     }
 
     new (this) BuildingTypeClassExtension(NoInitClass());
+
+    int wall_count = 0;
+    if (!Read_Wall_ID(pStm, wall_count) || wall_count < 0 || wall_count > MaxWallConnectionTypes) return E_FAIL;
+    auto& walls = WallConnectionOverlays[this];
+    walls.clear();
+    for (int i = 0; i < wall_count; ++i) {
+        int id = -1;
+        if (!Read_Wall_ID(pStm, id) || id < 0 || (!walls.empty() && id <= walls.back())) return E_FAIL;
+        walls.push_back(id);
+    }
 
     if (FixedWingLandingDir < FACING_NONE || FixedWingLandingDir >= FACING_COUNT) return E_FAIL;
 
@@ -302,6 +347,14 @@ HRESULT BuildingTypeClassExtension::Save(IStream *pStm, BOOL fClearDirty)
         return hr;
     }
 
+    const auto found = WallConnectionOverlays.find(this);
+    const int count = found == WallConnectionOverlays.end() ? 0 : static_cast<int>(found->second.size());
+    if (count > MaxWallConnectionTypes || !Write_Wall_ID(pStm, count)) return E_FAIL;
+    if (found != WallConnectionOverlays.end()) {
+        for (int id : found->second) {
+            if (!Write_Wall_ID(pStm, id)) return E_FAIL;
+        }
+    }
     return hr;
 }
 
@@ -330,6 +383,7 @@ void BuildingTypeClassExtension::Object_CRC(CRCEngine &crc) const
     crc(static_cast<int>(IsExclusiveFactory));
     Custom_Foundation_CRC(crc);
     Aircraft_Docks_CRC(crc);
+    Wall_Connections_CRC(crc);
 }
 
 
@@ -368,6 +422,7 @@ bool BuildingTypeClassExtension::Read_INI(CCINIClass &ini)
     IsWallOwner = ini.Get_Bool(ini_name, "WallOwner", IsWallOwner);
     IsBarGate = ini.Get_Bool(ini_name, "BarGate", IsBarGate);
     if (!Vinifera_PerformingLoad) {
+        Read_Wall_Connections(ini);
         Read_Aircraft_Docks(ini);
         Read_FixedWing_Landing_Dir(ini);
     }
@@ -1308,6 +1363,172 @@ void BuildingTypeClassExtension::Rebuild_Custom_Foundation_Radar(const RadarClas
     }
 }
 
+void BuildingTypeClassExtension::Read_Wall_Connections(CCINIClass& ini)
+{
+    ConnectsToWalls = ini.Get_Bool(Name(), "ConnectsToWalls", ConnectsToWalls);
+    Invalidate_Foundation_Sync_CRC();
+    char buffer[WallConnectionBufferSize] = {};
+    // Get_String trims its result and resolves inherited sections.
+    static constexpr char missing[] = "$AF7:ABSENT$";
+    const int length = ini.Get_String(Name(), "WallConnection.Types", missing, buffer, sizeof(buffer));
+    if (!std::strcmp(buffer, missing)) return;
+    auto& walls = WallConnectionOverlays[this];
+    walls.clear();
+    if (length >= static_cast<int>(sizeof(buffer)) - 1) {
+        DEBUG_WARNING("[WALLCONNECTION] type={} WallConnection.Types is too long; no additional connections enabled.\n", Name());
+        return;
+    }
+    if (!_stricmp(buffer, "none") || !_stricmp(buffer, "<none>")) return;
+    char* token = buffer;
+    while (*token) {
+        char* next = std::strchr(token, ',');
+        if (next) *next++ = '\0';
+        while (*token == ' ' || *token == '\t') ++token;
+        char* end = token + std::strlen(token);
+        while (end > token && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+        if (*token) {
+            const int id = static_cast<int>(OverlayTypeClass::From_Name(token));
+            if (id < 0) {
+                DEBUG_WARNING("[WALLCONNECTION] type={} unknown existing OverlayType '{}' in WallConnection.Types; ignored.\n", Name(), token);
+            } else {
+                walls.push_back(id);
+            }
+        }
+        if (!next) break;
+        token = next;
+    }
+    std::sort(walls.begin(), walls.end());
+    walls.erase(std::unique(walls.begin(), walls.end()), walls.end());
+}
+
+void BuildingTypeClassExtension::Finalize_Wall_Connections()
+{
+    // Overlay IsWall and all BuildingType conversion flags are available only after Objects.
+    auto found = WallConnectionOverlays.find(this);
+    if (found != WallConnectionOverlays.end()) {
+        auto& walls = found->second;
+        walls.erase(std::remove_if(walls.begin(), walls.end(), [this](int id) {
+            if (Is_Connection_Wall(id)) return false;
+            DEBUG_WARNING("[WALLCONNECTION] type={} OverlayType '{}' is not a supported wall; ignored.\n",
+                Name(), OverlayTypeClass::Name_From(static_cast<OverlayType>(id)));
+            return true;
+        }), walls.end());
+    }
+    if (ConnectsToWalls && (found == WallConnectionOverlays.end() || found->second.empty())) {
+        DEBUG_WARNING("[WALLCONNECTION] type={} ConnectsToWalls=yes requires valid WallConnection.Types; no additional connections enabled.\n", Name());
+    }
+    Invalidate_Foundation_Sync_CRC();
+}
+
+bool BuildingTypeClassExtension::Validate_Wall_Connections_After_Load()
+{
+    for (int i = 0; i < BuildingTypeExtensions.Count(); ++i) {
+        const auto ext = BuildingTypeExtensions[i];
+        const auto found = WallConnectionOverlays.find(ext);
+        if (found == WallConnectionOverlays.end()) continue;
+        for (int id : found->second) {
+            if (!Is_Connection_Wall(id)) return false;
+        }
+    }
+    Invalidate_Foundation_Sync_CRC();
+    return true;
+}
+
+bool BuildingTypeClassExtension::Has_Wall_Connection_Config() const
+{
+    const auto found = WallConnectionOverlays.find(this);
+    return ConnectsToWalls || (found != WallConnectionOverlays.end() && !found->second.empty());
+}
+
+void BuildingTypeClassExtension::Refresh_Wall_Connections_After_Load()
+{
+    for (int i = 0; i < Buildings.Count(); ++i) {
+        const auto building = Buildings[i];
+        if (building->IsDown && !building->IsInLimbo && building->Strength > 0) {
+            Refresh_Wall_Connections(building, building->Get_Cell());
+        }
+    }
+}
+
+void BuildingTypeClassExtension::Wall_Connections_CRC(CRCEngine& crc) const
+{
+    if (!Has_Wall_Connection_Config()) return;
+    crc(static_cast<unsigned>(0x41463757)); // AF7W: typed wall connections.
+    crc(static_cast<int>(ConnectsToWalls));
+    const auto found = WallConnectionOverlays.find(this);
+    const int count = found == WallConnectionOverlays.end() ? 0 : static_cast<int>(found->second.size());
+    crc(count);
+    if (found != WallConnectionOverlays.end()) {
+        for (int id : found->second) crc(id);
+    }
+}
+
+bool BuildingTypeClassExtension::Cell_Connects_To_Wall(const CellClass* cell, OverlayType overlay)
+{
+    if (!cell || overlay < OVERLAY_FIRST || overlay >= OverlayTypes.Count() || !OverlayTypes[overlay]->IsWall) return false;
+    for (const auto* object = cell->OccupierPtr; object; object = object->Next) {
+        if (object->RTTI != RTTI_BUILDING || object->Strength <= 0 || object->IsInLimbo || !object->IsDown) continue;
+        const auto building = static_cast<const BuildingClass*>(object);
+        const auto ext = Extension::Fetch(building->Class);
+        if (!ext || !ext->ConnectsToWalls) continue;
+        const auto found = WallConnectionOverlays.find(ext);
+        if (found != WallConnectionOverlays.end() &&
+            std::binary_search(found->second.begin(), found->second.end(), static_cast<int>(overlay))) return true;
+    }
+    return false;
+}
+
+void BuildingTypeClassExtension::Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin)
+{
+    const auto ext = Extension::Fetch(building->Class);
+    if (!ext || !ext->ConnectsToWalls) return;
+    const auto found = WallConnectionOverlays.find(ext);
+    if (found == WallConnectionOverlays.end() || found->second.empty()) return;
+    const Cell* mask = building->Class->Occupy_List(false);
+    if (!mask) return;
+
+    const auto less = [](const Cell& a, const Cell& b) {
+        return a.Y != b.Y ? a.Y < b.Y : a.X < b.X;
+    };
+    std::vector<Cell> occupied;
+    for (int i = 0; i < CustomFoundationStorageSize; ++i) {
+        if (mask[i] == REFRESH_EOL) break;
+        const int x = int(origin.X) + mask[i].X;
+        const int y = int(origin.Y) + mask[i].Y;
+        if (x < 0 || x >= MAP_CELL_W || y < 0 || y >= MAP_CELL_H) return;
+        occupied.emplace_back(x, y);
+        if (i == CustomFoundationStorageSize - 1) return;
+    }
+    std::sort(occupied.begin(), occupied.end(), less);
+    occupied.erase(std::unique(occupied.begin(), occupied.end()), occupied.end());
+    const Cell directions[] = { Cell(0, -1), Cell(1, 0), Cell(0, 1), Cell(-1, 0) };
+    std::vector<Cell> neighbors;
+    for (const Cell& cell : occupied) {
+        for (const Cell& direction : directions) {
+            const Cell next(cell.X + direction.X, cell.Y + direction.Y);
+            if (!std::binary_search(occupied.begin(), occupied.end(), next, less)) neighbors.push_back(next);
+        }
+    }
+    std::sort(neighbors.begin(), neighbors.end(), less);
+    neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+    for (const Cell& cell : neighbors) {
+        // Wall_Update also visits each neighbor's neighbors. Guard its complete physical halo.
+        if (cell.X < 2 || cell.Y < 2 || cell.X >= MAP_CELL_W - 2 || cell.Y >= MAP_CELL_H - 2) continue;
+        if (!Map.In_Radar(cell)) continue;
+        bool safe = true;
+        for (int y = cell.Y - 2; y <= cell.Y + 2 && safe; ++y) {
+            for (int x = cell.X - 2; x <= cell.X + 2; ++x) {
+                if (!Map.Array[y * MAP_CELL_W + x]) { safe = false; break; }
+            }
+        }
+        if (!safe) continue;
+        const auto target = Map.Array[cell.Y * MAP_CELL_W + cell.X];
+        if (std::binary_search(found->second.begin(), found->second.end(), static_cast<int>(target->Overlay))) {
+            target->Wall_Update(false);
+        }
+    }
+}
+
 void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
 {
     // Explicit scalar values only; no array padding, object padding or pointers.
@@ -1355,20 +1576,27 @@ void BuildingTypeClassExtension::Custom_Foundation_CRC(CRCEngine& crc) const
  */
 unsigned BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(unsigned native_crc)
 {
-    if (!FoundationSyncCRCValid) {
+    const bool wall_tower_disabled = Rule && !Rule->WallTower;
+    if (!FoundationSyncCRCValid || FoundationSyncWallTowerDisabled != wall_tower_disabled) {
+        FoundationSyncWallTowerDisabled = wall_tower_disabled;
         CRCEngine config;
         FoundationSyncCRCPresent = false;
+        if (wall_tower_disabled) {
+            FoundationSyncCRCPresent = true;
+            config(static_cast<unsigned>(0x4146374E)); // AF7N: optional WallTower disabled.
+        }
         for (int i = 0; i < BuildingTypes.Count(); ++i) {
             const auto type = BuildingTypes[i];
             const auto ext = Extension::Fetch(type);
             if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock() ||
                 ext->CustomUnitRepairCellSet || ext->CustomUnitFactoryExitCellSet ||
-                ext->FixedWingLandingDir != FACING_NONE)) {
+                ext->FixedWingLandingDir != FACING_NONE || ext->Has_Wall_Connection_Config())) {
                 FoundationSyncCRCPresent = true;
                 config(static_cast<int>(type->HeapID));
                 config(static_cast<unsigned>(CRCEngine::CRC_String(type->IniName.c_str(), 0)));
                 ext->Custom_Foundation_CRC(config);
                 ext->Aircraft_Docks_CRC(config);
+                ext->Wall_Connections_CRC(config);
             }
         }
         FoundationSyncCRC = static_cast<unsigned>(config());

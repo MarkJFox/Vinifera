@@ -197,7 +197,13 @@ int INIClassExt::_Load(Straw& ffile, bool)
         if (!strlen(buffer)) continue;
 
         strtrim(divider);
-        if (!strlen(divider)) continue;
+        if (!strlen(divider)) {
+            // Include parent sections: General may inherit an explicitly empty WallTower.
+            if (!_stricmp(buffer, "WallTower") || !_stricmp(buffer, "WallConnection.Types")) {
+                if (!Put_String(section.c_str(), buffer, "none")) return false;
+            }
+            continue;
+        }
 
         if (Put_String(section.c_str(), buffer, divider) == false) {
             return false;

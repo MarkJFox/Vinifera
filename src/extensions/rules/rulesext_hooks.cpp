@@ -28,9 +28,32 @@
 #include "wwmouse.h"
 
 #include <resource.h>
+#include <cstring>
 
 
 extern HMODULE DLLInstance;
+
+// The skipped parser block also commits the preceding NodGateTwo result.
+DEFINE_HOOK(0x005CA390, _Rules_General_Optional_WallTower, 6)
+{
+    GET(CCINIClass*, ini, EDI);
+    char value[128] = {};
+    // Get_String resolves inherited sections, unlike Is_Present.
+    // Keep the missing-value marker printable: Get_String trims its result.
+    static constexpr char missing[] = "$AF7:ABSENT$";
+    ini->Get_String("General", "WallTower", missing, value, sizeof(value));
+    if (!std::strcmp(value, missing)) return 0;
+    char* first = value;
+    while (*first == ' ' || *first == '\t') ++first;
+    char* end = first + std::strlen(first);
+    while (end > first && (end[-1] == ' ' || end[-1] == '\t')) *--end = '\0';
+    if (*first != '\0' && _stricmp(first, "none") && _stricmp(first, "<none>")) return 0;
+
+    GET(RulesClass*, rules, ESI);
+    rules->NodGateTwo = R->EAX<BuildingTypeClass*>();
+    R->EAX(0);
+    return 0x005CA3CE;
+}
 
 
 /**

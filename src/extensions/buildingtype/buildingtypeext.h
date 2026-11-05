@@ -13,6 +13,8 @@
 #include "technotypeext.h"
 
 class RadarClass;
+class CellClass;
+class BuildingClass;
 
 
 class DECLSPEC_UUID(UUID_BUILDINGTYPE_EXTENSION)
@@ -46,6 +48,12 @@ public:
 
     void Fetch_Building_Normal_Image(TheaterType theater);
 
+    void Finalize_Wall_Connections();
+    static bool Validate_Wall_Connections_After_Load();
+    static void Refresh_Wall_Connections_After_Load();
+    static bool Cell_Connects_To_Wall(const CellClass* cell, OverlayType overlay);
+    static void Refresh_Wall_Connections(const BuildingClass* building, const Cell& origin);
+
     // AF-0005B: one immutable, type-owned mask for both Occupy_List modes.
     static constexpr int CustomFoundationStorageSize = 120;
     static constexpr int CustomFoundationMaxCells = CustomFoundationStorageSize - 1;
@@ -72,6 +80,9 @@ public:
     static unsigned Custom_Foundation_Sync_CRC(unsigned native_crc);
 
 private:
+    void Read_Wall_Connections(CCINIClass& ini);
+    void Wall_Connections_CRC(CRCEngine& crc) const;
+    bool Has_Wall_Connection_Config() const;
     void Read_Custom_Foundation();
     void Read_Custom_Infantry_Exit_Cell();
     void Read_Custom_Unit_Factory_Exit_Cell();
@@ -193,4 +204,5 @@ public:
     bool CustomUnitFactoryExitCellSet;
     Cell CustomUnitFactoryExitCell;
     FacingType FixedWingLandingDir;
+    bool ConnectsToWalls;
 };

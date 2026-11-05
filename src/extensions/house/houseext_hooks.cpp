@@ -127,7 +127,8 @@ int HouseClassExt::_AI_Building()
     /**
      *  Build some defenses.
      */
-    if (node->Type == BASE_DEFENSE || BuildingTypes[node->Type] == Rule->WallTower && node->CellID == Cell(0, 0)) {
+    if (node->Type == BASE_DEFENSE || (Rule->WallTower && node->Type >= STRUCT_FIRST &&
+        BuildingTypes[node->Type] == Rule->WallTower && node->CellID == Cell(0, 0))) {
 
         const int nodeid = Base.Nodes.ID(node);
         if (!AI_Build_Defense(nodeid, Base.OuterCells.Count() > 0 ? &Base.OuterCells : nullptr)) {
@@ -136,7 +137,7 @@ int HouseClassExt::_AI_Building()
              *  If it's a wall tower, delete it twice?
              *  Perhaps it's assumed that the wall tower is followed by its upgrade?
              */
-            if (node->Type == Rule->WallTower->HeapID) {
+            if (Rule->WallTower && node->Type == Rule->WallTower->HeapID) {
                 Base.Nodes.Delete(nodeid);
             }
 
@@ -243,6 +244,29 @@ int HouseClassExt::_AI_Building()
 
     BuildStructure = node->Type;
     return TICKS_PER_SECOND;
+}
+
+
+// Skip only the optional tower entry; the native defense placeholder follows.
+DEFINE_HOOK(0x004C64BD, _House_Make_Base_Nodes_Optional_WallTower, 6)
+{
+    return Rule->WallTower ? 0 : 0x004C6511;
+}
+
+DEFINE_HOOK(0x004C6620, _House_Make_Base_Nodes_Optional_Final_WallTower, 6)
+{
+    return Rule->WallTower ? 0 : 0x004C6674;
+}
+
+// Preserve the loop count and append its ordinary defense node at 004C9325.
+DEFINE_HOOK(0x004C92D2, _House_AI_Build_Wall_Optional_WallTower, 5)
+{
+    return Rule->WallTower ? 0 : 0x004C9325;
+}
+
+DEFINE_HOOK(0x004C7B2B, _House_AI_Build_Defense_Optional_Tower_Prerequisite, 5)
+{
+    return Rule->WallTower ? 0 : 0x004C7B76;
 }
 
 

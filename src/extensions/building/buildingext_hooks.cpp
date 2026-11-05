@@ -69,6 +69,25 @@
 
 #include <algorithm>
 
+// Occupation and native Unlimbo have succeeded before the gate-update block.
+DEFINE_HOOK(0x0042A8F7, _Building_Unlimbo_Refresh_Wall_Connections, 6)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET(BuildingClass*, building, ESI);
+    BuildingTypeClassExtension::Refresh_Wall_Connections(building, building->Get_Cell());
+    return 0;
+}
+
+// EDI and the saved origin survive Techno::Limbo; replay mov bl,al / mov al,[esp+13h].
+DEFINE_HOOK(0x0042DF54, _Building_Limbo_Refresh_Wall_Connections, 6)
+{
+    if (Vinifera_PerformingLoad || !(R->EAX() & 0xFF)) return 0;
+    GET(BuildingClass*, building, EDI);
+    GET_STACK(Cell, origin, 0x24);
+    BuildingTypeClassExtension::Refresh_Wall_Connections(building, origin);
+    return 0;
+}
+
 // D5 geometry applies only to explicitly configured land WeaponsFactory types.
 // Clear_Bib also fixes released Hover blockers at native exits. Inactive hooks
 // replay their complete original instructions, including native facing.

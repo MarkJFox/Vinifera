@@ -1126,6 +1126,10 @@ static bool Vinifera_Load_Game_With_Context(const char* file_name, SaveLoadConte
     SwizzleManager.Reset();
     // All native and extension pointers have now been remapped. Never validate
     // cyclic dock references while extension Load is still reading raw IDs.
+    if (!BuildingTypeClassExtension::Validate_Wall_Connections_After_Load()) {
+        DEBUG_ERROR("Invalid building wall connection configuration in save game.\n");
+        return false;
+    }
     if (!BuildingTypeClassExtension::Validate_Custom_Unit_Repairs_After_Load()) {
         DEBUG_ERROR("Invalid custom ground repair type configuration in save game.\n");
         return false;
@@ -1136,6 +1140,7 @@ static bool Vinifera_Load_Game_With_Context(const char* file_name, SaveLoadConte
     }
     Post_Load_Game();
     Vinifera_Post_Load_Game();
+    BuildingTypeClassExtension::Refresh_Wall_Connections_After_Load();
     Map.Init_IO();
     Map.Activate(1);
     Map.Shift_Sidebar();

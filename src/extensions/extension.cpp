@@ -2016,9 +2016,8 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0004B adds the saved BuildingType FixedWingLandingDir configuration.
-    // Reject older extension layouts globally, following the 0x10000 basis steps.
-    unsigned version = 0x1D0000;
+    // Optional WallTower and the explicitly streamed wall overlay IDs require a new save contract.
+    unsigned version = 0x1E0000;
 
     /**
      *  For debug builds, offset the save file version.

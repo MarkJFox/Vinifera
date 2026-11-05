@@ -39,6 +39,19 @@
 #include "tiberium.h"
 #include "tiberiumext.h"
 #include "tibsun_globals.h"
+#include "vinifera_globals.h"
+
+// No prologue has run. The added success path uses only the native bare ret 8.
+DEFINE_HOOK(0x00456690, _Cell_Has_Wall_Or_Gate_Building_Connections, 5)
+{
+    if (Vinifera_PerformingLoad) return 0;
+    GET_STACK(OverlayType, overlay, 0x4);
+    if (overlay == OVERLAY_NONE) return 0;
+    GET(CellClass*, cell, ECX);
+    if (!BuildingTypeClassExtension::Cell_Connects_To_Wall(cell, overlay)) return 0;
+    R->EAX(1);
+    return 0x004566C8;
+}
 
 /**
  *  A fake class for implementing new member functions which allow

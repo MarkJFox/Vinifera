@@ -677,6 +677,7 @@ bool RulesClassExtension::Objects(CCINIClass &ini)
     for (int index = 0; index < BuildingTypeExtensions.Count(); ++index) {
         BuildingTypeExtensions[index]->Finalize_Custom_Foundation();
         BuildingTypeExtensions[index]->Finalize_Aircraft_Docks();
+        BuildingTypeExtensions[index]->Finalize_Wall_Connections();
     }
 
     return true;

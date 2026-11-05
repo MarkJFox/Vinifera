@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath's optional WallTower and building wall connections accept `WallTower=none` or an empty value and add BuildingType `ConnectsToWalls=no` / `WallConnection.Types=` for existing wall OverlayTypes. The user confirmed skirmish with `WallTower=none`, continued AI defense construction and correct wall frames. Save basis is `0x1E0000`. Start a new game. Save/load, multiplayer and remaining edge cases are open. [AF-0007A wall connections](AF-0007A.md#optional-walltower-and-building-wall-connections)
 - Aftermath AF-0004B adds saved BuildingType `FixedWingLandingDir=0..7` for the actual FixedWing approach and descent. The save basis is now `0x1D0000`; start a new game. User runtime validated the reported approach/landing and opposite-direction edge fallback; remaining checks are open. See [AF-0004B](AF-0004B.md).
 - Aftermath AF-0007A adds saved Rules `BalloonHover=yes` for UnitTypes using the existing Jumpjet locomotor. The save basis is now `0x1C0000`; start a new game. Older extension blobs are rejected even if the new bool fits existing padding. See [AF-0007A](AF-0007A.md).
 - Aftermath AF-0005D5 adds saved Art `UnitFactoryExitCell=X,Y` for eastward ground Weapons Factories on native or custom foundations. The save basis is now `0x1B0000`; start a new game. See [AF-0005D5](AF-0005D5.md).
