@@ -2016,9 +2016,9 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0007A adds the saved TechnoType BalloonHover configuration.
+    // AF-0004B adds the saved BuildingType FixedWingLandingDir configuration.
     // Reject older extension layouts globally, following the 0x10000 basis steps.
-    unsigned version = 0x1C0000;
+    unsigned version = 0x1D0000;
 
     /**
      *  For debug builds, offset the save file version.

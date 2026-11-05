@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0004B adds saved BuildingType `FixedWingLandingDir=0..7` for the actual FixedWing approach and descent. The save basis is now `0x1D0000`; start a new game. User runtime validated the reported approach/landing and opposite-direction edge fallback; remaining checks are open. See [AF-0004B](AF-0004B.md).
 - Aftermath AF-0007A adds saved Rules `BalloonHover=yes` for UnitTypes using the existing Jumpjet locomotor. The save basis is now `0x1C0000`; start a new game. Older extension blobs are rejected even if the new bool fits existing padding. See [AF-0007A](AF-0007A.md).
 - Aftermath AF-0005D5 adds saved Art `UnitFactoryExitCell=X,Y` for eastward ground Weapons Factories on native or custom foundations. The save basis is now `0x1B0000`; start a new game. See [AF-0005D5](AF-0005D5.md).
 - Aftermath AF-0005D4b lets ground repair buildings define one occupied Art `UnitRepairCell=X,Y` on native or custom foundations, using native Drive visitors, scalar reservation and repair economy. Native foundations keep their native exit; custom foundations use an outer exit. Invalid native points are ignored without changing the foundation; invalid custom contracts retain the safe foundation fallback. Save basis remains `0x1A0000`. Custom off-center repair is user-confirmed; native support and full runtime acceptance remain pending. See [AF-0005D4b](AF-0005D4b.md).
@@ -65,6 +66,10 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0004B
+
+- Add RulesINI BuildingType `FixedWingLandingDir=0..7` to orient the existing FixedWing approach, final descent and touchdown at the assigned Single-/MultiDock slot. Preserve the native default, deterministic opposite/native-direction fallbacks, parked production/service and takeoff paths. Include the setting in Save/Load and configuration CRC; save basis `0x1D0000`. RUNTIME VALIDATED by the user for actual configurable approach, descent/landing and map-edge opposite fallback, including facing 2 to 6. Save/Load, multiplayer, all-eight-direction coverage, comprehensive MultiDock/dock-change cases and full regressions remain open. See [AF-0004B](AF-0004B.md).
 
 ### Aftermath AF-0007A1
 

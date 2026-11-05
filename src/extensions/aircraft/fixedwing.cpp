@@ -11,6 +11,7 @@
 #include "building.h"
 #include "buildingext.h"
 #include "buildingtype.h"
+#include "buildingtypeext.h"
 #include "cell.h"
 #include "coord.h"
 #include "debughandler.h"
@@ -60,6 +61,7 @@ namespace
         Coord D, P, G, S;
         DirType Direction;
         bool PrimaryValid; // Transient diagnostic result, never stored on an object.
+        bool NativeFallback;
     };
 
     // These are native nonvirtual __thiscall methods on the full Fly object,
@@ -187,21 +189,40 @@ namespace
             ext->Aircraft_Dock_Coord(ext->Find_First_Free_Aircraft_Dock_Slot(), position);
     }
 
-    bool Geometry(AircraftClass* a, BuildingClass* dock, Approach& out)
+    FacingType Native_Landing_Facing(AircraftClass* a, BuildingClass* dock)
+    {
+        // Landing_Direction is an eight-way FacingType, NOT a Dir256 value.
+        // In mutual contact it reads the same building facing used before HELLO.
+        return Dock_Contact(a, dock)
+            ? static_cast<FacingType>(a->Landing_Direction())
+            : static_cast<FacingType>(dock->PrimaryFacing.Current().Get_Facing<8>());
+    }
+
+    FacingType Landing_Facing(AircraftClass* a, BuildingClass* dock)
+    {
+        const auto configured = Extension::Fetch(dock->Class)->FixedWingLandingDir;
+        return configured != FACING_NONE ? configured : Native_Landing_Facing(a, dock);
+    }
+
+    bool Geometry(AircraftClass* a, BuildingClass* dock, Approach& out, bool configured_direction = true)
     {
         Coord position;
         if (!Dock_Point(a, dock, position, true)) return false;
-        // Landing_Direction is an eight-way FacingType, NOT a Dir256 value.
-        // In mutual contact it reads the same building facing used before HELLO.
-        const auto facing = Dock_Contact(a, dock)
-            ? static_cast<FacingType>(a->Landing_Direction())
-            : static_cast<FacingType>(dock->PrimaryFacing.Current().Get_Facing<8>());
+        const auto facing = configured_direction ? Landing_Facing(a, dock) : Native_Landing_Facing(a, dock);
         const DirType primary(facing);
+        out.NativeFallback = false;
         out.PrimaryValid = Build_Approach(position, primary, out);
         if (out.PrimaryValid) return true;
         // DirType's 16-bit addition wraps; DIR_S is exactly 128 in Dir256.
         // Rebuild the entire chain with unchanged lengths, never clamp points.
-        return Build_Approach(position, primary + DirType(DIR_S), out);
+        if (Build_Approach(position, primary + DirType(DIR_S), out)) return true;
+        const auto native_facing = Native_Landing_Facing(a, dock);
+        if (facing == native_facing || DirType(native_facing) == primary + DirType(DIR_S)) return false;
+        // An unusable configured pair must not exclude a previously usable dock.
+        out.NativeFallback = true;
+        const DirType native_direction(native_facing);
+        return Build_Approach(position, native_direction, out) ||
+            Build_Approach(position, native_direction + DirType(DIR_S), out);
     }
 
     bool Dock_Exists(AircraftClass* a, BuildingClass* dock)
@@ -408,12 +429,14 @@ namespace
                 valid ? Ref(Map[d].AltOccupierPtr) : "SKIP_INVALID_COORD", reason, checks);
             std::string geometry_state = "SKIP_INVALID_DOCK_COORD";
             if (valid) {
-                const char* selection = approach.PrimaryValid ? "APPROACH_PRIMARY_VALID"
+                const char* selection = approach.NativeFallback
+                    ? (geometry ? "APPROACH_CONFIG_INVALID_NATIVE_FALLBACK_VALID" : "APPROACH_CONFIG_INVALID_NATIVE_FALLBACK_INVALID")
+                    : approach.PrimaryValid ? "APPROACH_PRIMARY_VALID"
                     : geometry ? "APPROACH_PRIMARY_INVALID_FALLBACK_OPPOSITE APPROACH_OPPOSITE_VALID"
                     : "APPROACH_PRIMARY_INVALID_FALLBACK_OPPOSITE APPROACH_OPPOSITE_INVALID";
                 geometry_state = std::format("{} primaryLandingFacing={} selectedLandingFacing={} headingRaw={} Dvalid={} S=({},{},{}) valid={} G=({},{},{}) valid={} P=({},{},{}) valid={} segments(SG,GP,PD)=({},{},{})",
                     selection,
-                    Dock_Contact(a, dock) ? int(a->Landing_Direction()) : int(dock->PrimaryFacing.Current().Get_Facing<8>()),
+                    int(Landing_Facing(a, dock)),
                     int(approach.Direction.Get_Facing<8>()),
                     int(approach.Direction.Get_Raw()), Valid_Point(approach.D),
                     approach.S.X, approach.S.Y, approach.S.Z, Valid_Point(approach.S),
@@ -1797,7 +1820,8 @@ int Mission_Enter(AircraftClass* a)
     auto dock = Reserved(a);
     if (a->HeightAGL <= 0 && !fly->IsTakingOff && !fly->IsMoving) {
         Approach approach;
-        if (dock && Geometry(a, dock, approach) && !fly->IsLanding && fly->CurrentSpeed == 0.0 && fly->TargetSpeed == 0.0
+        // Already parked/produced aircraft keep their native facing and service path.
+        if (dock && Geometry(a, dock, approach, a->Status == LANDING) && !fly->IsLanding && fly->CurrentSpeed == 0.0 && fly->TargetSpeed == 0.0
             && Heading_OK(a->PrimaryFacing.Current(), approach.Direction)
             && Distance_Squared(a->PositionCoord, approach.D) <= int64_t(TOUCHDOWN) * TOUCHDOWN) {
             // IM_IN queues the existing aircraft SLEEP and building REPAIR missions.

@@ -138,7 +138,8 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     CustomUnitRepairCellSet(false),
     CustomUnitRepairCell(0, 0),
     CustomUnitFactoryExitCellSet(false),
-    CustomUnitFactoryExitCell(0, 0)
+    CustomUnitFactoryExitCell(0, 0),
+    FixedWingLandingDir(FACING_NONE)
 {
     std::fill(std::begin(AircraftDockCells), std::end(AircraftDockCells), Cell(0, 0));
     Reset_Custom_Foundation();
@@ -202,6 +203,8 @@ HRESULT BuildingTypeClassExtension::Load(IStream *pStm)
     }
 
     new (this) BuildingTypeClassExtension(NoInitClass());
+
+    if (FixedWingLandingDir < FACING_NONE || FixedWingLandingDir >= FACING_COUNT) return E_FAIL;
 
     // Only owned POD is available here; native owner pointers are not swizzled.
     if (CustomUnitFactoryExitCellSet) {
@@ -364,7 +367,10 @@ bool BuildingTypeClassExtension::Read_INI(CCINIClass &ini)
     IsExclusiveFactory = ini.Get_Bool(ini_name, "ExclusiveFactory", IsExclusiveFactory);
     IsWallOwner = ini.Get_Bool(ini_name, "WallOwner", IsWallOwner);
     IsBarGate = ini.Get_Bool(ini_name, "BarGate", IsBarGate);
-    if (!Vinifera_PerformingLoad) Read_Aircraft_Docks(ini);
+    if (!Vinifera_PerformingLoad) {
+        Read_Aircraft_Docks(ini);
+        Read_FixedWing_Landing_Dir(ini);
+    }
 
     Fetch_Building_Normal_Image(Scen->Theater);
 
@@ -1175,8 +1181,31 @@ void BuildingTypeClassExtension::Finalize_Aircraft_Docks()
     }
 }
 
+void BuildingTypeClassExtension::Read_FixedWing_Landing_Dir(CCINIClass& ini)
+{
+    if (!ini.Is_Present(Name(), "FixedWingLandingDir")) return;
+    char buffer[128] = {};
+    const int length = ini.Get_String(Name(), "FixedWingLandingDir", "", buffer, sizeof(buffer));
+    const char* cursor = buffer;
+    int facing = 0;
+    FixedWingLandingDir = FACING_NONE;
+    Invalidate_Foundation_Sync_CRC();
+    if (length <= 0 || length >= static_cast<int>(sizeof(buffer)) - 1 ||
+        !Read_Foundation_Integer(cursor, facing) || *cursor != '\0' ||
+        facing < FACING_FIRST || facing >= FACING_COUNT) {
+        DEBUG_WARNING("[FIXEDWING] type={} FixedWingLandingDir={} rejected: expected integer 0..7; native landing direction retained.\n",
+            Name(), buffer);
+        return;
+    }
+    FixedWingLandingDir = static_cast<FacingType>(facing);
+}
+
 void BuildingTypeClassExtension::Aircraft_Docks_CRC(CRCEngine& crc) const
 {
+    if (FixedWingLandingDir != FACING_NONE) {
+        crc(0x46574C44u); // FWLD: optional FixedWing landing direction.
+        crc(static_cast<int>(FixedWingLandingDir));
+    }
     if (!Is_Aircraft_MultiDock()) return; // Preserve the complete legacy Single-Dock CRC path.
     crc(0x4D444F43u);
     crc(1);
@@ -1333,7 +1362,8 @@ unsigned BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(unsigned native_
             const auto type = BuildingTypes[i];
             const auto ext = Extension::Fetch(type);
             if (ext != nullptr && (ext->IsCustomFoundationEnabled || ext->Is_Aircraft_MultiDock() ||
-                ext->CustomUnitRepairCellSet || ext->CustomUnitFactoryExitCellSet)) {
+                ext->CustomUnitRepairCellSet || ext->CustomUnitFactoryExitCellSet ||
+                ext->FixedWingLandingDir != FACING_NONE)) {
                 FoundationSyncCRCPresent = true;
                 config(static_cast<int>(type->HeapID));
                 config(static_cast<unsigned>(CRCEngine::CRC_String(type->IniName.c_str(), 0)));

@@ -93,6 +93,7 @@ private:
     void Read_Aircraft_Docks(CCINIClass& ini);
     void Disable_Aircraft_Docks(const char* reason);
     void Aircraft_Docks_CRC(CRCEngine& crc) const;
+    void Read_FixedWing_Landing_Dir(CCINIClass& ini);
 
 public:
     /**
@@ -191,4 +192,5 @@ public:
     Cell CustomUnitRepairCell; // Historical names also cover native-foundation repair points.
     bool CustomUnitFactoryExitCellSet;
     Cell CustomUnitFactoryExitCell;
+    FacingType FixedWingLandingDir;
 };
