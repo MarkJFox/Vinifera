@@ -608,7 +608,8 @@ DEFINE_HOOK(0x004A59E1, _FootClass_AI_IdleRate_Patch, 0)
      * 
      *  If the object is currently moving, check to see if its time to update its walk frame.
      */
-    if (this_ptr->Locomotion->Is_Moving_Now() && !(Frame % this_ptr->TClass->WalkRate)) {
+    if (this_ptr->Locomotion->Is_Moving_Now() && this_ptr->TClass->WalkRate != 0
+        && !(Frame % this_ptr->TClass->WalkRate)) {
         ++this_ptr->TotalFramesWalked;
 
     /**

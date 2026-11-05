@@ -792,8 +792,10 @@ namespace
                 || aircraft->Locomotion->Is_Moving_Now();
         }
 
-        const unsigned int rate = aircraft->Class->WalkRate > 0 ? aircraft->Class->WalkRate : 1;
-        frame = active ? (static_cast<unsigned int>(Frame) / rate) % static_cast<unsigned int>(frame_count) : 0;
+        const unsigned int rate = active
+            ? (aircraft->Class->WalkRate > 0 ? static_cast<unsigned int>(aircraft->Class->WalkRate) : 0)
+            : Extension::Fetch(aircraft->Class)->IdleRate;
+        frame = rate > 0 ? (static_cast<unsigned int>(Frame) / rate) % static_cast<unsigned int>(frame_count) : 0;
         return true;
     }
 

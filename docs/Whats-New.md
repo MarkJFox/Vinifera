@@ -76,7 +76,8 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### Aftermath AF-0006
 
-- Add multi-frame HVA animation for Aircraft, including animated rotor sections in the visible model and shadow during flight, hover, shooting, Takeoff and Landing. Render multi-section Aircraft shadows as one connected silhouette on flat terrain and slopes. User runtime validated / complete, with no visible pivot, orbit or offset problems. Parked aircraft use frame 0; single-frame aircraft retain native paths. No new INI tag or saved state. See [AF-0006](AF-0006.md) for the A/B/B1/B2/B3 history.
+- Add multi-frame HVA animation for Aircraft, including animated rotor sections in the visible model and shadow during flight, hover, shooting, Takeoff and Landing. Render multi-section Aircraft shadows as one connected silhouette on flat terrain and slopes. User runtime validated / complete, with no visible pivot, orbit or offset problems. Single-frame aircraft retain native paths. No new INI tag or saved state. See [AF-0006](AF-0006.md) for the A/B/B1/B2/B3 history.
+- AF-0006C: Use existing WalkRate for active Aircraft HVA animation and IdleRate while fully parked, keeping model and shadow frames synchronized. Zero rates disable animation; guard WalkRate=0 in the shared Foot AI animation counter against division by zero. RUNTIME VALIDATED by the user for Aircraft WalkRate/IdleRate, rotor animation in flight and stationary hover, and movement/standstill transitions. Unconfirmed special-case checks remain open.
 
 ### Aftermath AF-0005D5
 
