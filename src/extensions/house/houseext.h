@@ -65,6 +65,21 @@ public:
     int AI_Unit();
     int AI_Naval_Unit();
 
+    // Shared AF-0009 entry points; these methods add no per-house saved state.
+    bool Is_Advanced_AI_Enabled() const;
+    bool Can_Advanced_AI_Build_Building(const BuildingTypeClass* type, const BuildingClass* factory = nullptr,
+        bool check_ai_build_this = true) const;
+    bool Has_Advanced_AI_Building_Production() const;
+    const BuildingClass* Find_Advanced_AI_Upgrade_Target(const BuildingTypeClass* upgrade) const;
+    bool Get_Advanced_AI_Power_Gain(const BuildingTypeClass* type, long long& gain) const;
+    bool Has_Advanced_AI_Power_For(const BuildingTypeClass* type) const;
+    const BuildingTypeClass* Select_Advanced_AI_Power_Plant(const BuildingClass* factory = nullptr) const;
+    // Resolve power for an already validated order: desired type, a power plant, or nullptr.
+    const BuildingTypeClass* Prioritize_Advanced_AI_Power(const BuildingTypeClass* desired, const BuildingClass* factory = nullptr) const;
+    const BuildingTypeClass* Select_Advanced_AI_Building() const;
+    void Log_Advanced_AI_Error(const char* reason, const BuildingTypeClass* type = nullptr, int detail = 0) const;
+    static void Clear_Advanced_AI_Log_State();
+
     bool Has_Prerequisite(int prerequisite);
     bool Has_Prerequisite(PrerequisiteGroupType group);
     bool Has_Prerequisite(StructType building);

@@ -14,6 +14,7 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath AF-0009B1 (including B1a-B1e) adds opt-in `[AI] UseAdvancedAI=yes`; default `no` or no effective key keeps classic AI. Regular scenario overrides support the client toggle; no map/mode heuristics decide activation. Basic infrastructure uses a validated classic fallback and shared power planning with the existing Side priority: turbine upgrade, advanced plant, regular plant. Two new TS++ engine bindings are required. The saved switch participates in CRC; save basis is `0x200000`, so start a new game. The user confirmed a successful build and basic building/fallback/power behavior, including GDI turbines and Nod advanced plants. Temporary diagnostics were removed afterward; a new manual build/retest is required. Full multiplayer, save/load and regression validation remains open. See [AF-0009](AF-0009.md).
 - Aftermath AF-0007B adds opt-in BuildingType `CanReplaceWalls=no`. With `yes`, buildings can replace owned walls in `WallConnection.Types` under their actual occupation mask. Walls are removed after successful native Unlimbo, without a refund. The user confirmed placement on owned walls after the AF-0007B1 fix. Save basis is `0x1F0000`. Start a new game. Save/load, multiplayer and remaining edge cases are open. [AF-0007B](AF-0007B.md)
 - Aftermath's optional WallTower and building wall connections accept `WallTower=none` or an empty value and add BuildingType `ConnectsToWalls=no` / `WallConnection.Types=` for existing wall OverlayTypes. The user confirmed skirmish with `WallTower=none`, continued AI defense construction and correct wall frames. Save basis is `0x1E0000`. Start a new game. Save/load, multiplayer and remaining edge cases are open. [AF-0007A wall connections](AF-0007A.md#optional-walltower-and-building-wall-connections)
 - Aftermath AF-0004B adds saved BuildingType `FixedWingLandingDir=0..7` for the actual FixedWing approach and descent. The save basis is now `0x1D0000`; start a new game. User runtime validated the reported approach/landing and opposite-direction edge fallback; remaining checks are open. See [AF-0004B](AF-0004B.md).
@@ -68,6 +69,12 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0009B1 - initial Advanced AI base planning
+
+- Integrate initial infrastructure selection adapted from Rampastring's DTA V1, with simplified opt-in activation and the existing native fallback. Preserve human/observer safeguards, production permissions, prerequisites/groups, BuildLimits, Owner/BuiltAt and existing Aftermath hooks. Native fallback candidates do not require the infrastructure-only `AIBuildThis` policy. Serialize building starts across construction yards without cancelling existing products.
+- Resolve additional net power demand and `PowerSurplus` centrally for new selections, pending orders, fallback and factory starts. Reuse Side `PowerTurbine`, `AdvancedPowerPlant`, `RegularPowerPlant`, native upgrade eligibility/placement and existing slots/products. Add TS++ `BuildingClass::Can_Upgrade` and `HouseClass::Find_Upgrade_Location` bindings; no separate power manager or saved reservations. Keep classic AI unchanged when disabled.
+- Remove temporary B1c entry hooks, snapshots, MCV diagnostics, factory dumps and detailed candidate logs. Keep effective configuration, building selection, bounded power selection/deficit messages and actual errors. This cleanup changes executable source and requires a fresh manual build/retest. The user already validated the preceding build and basic runtime behavior; no builds or automated tests were run by the agent. AF-0009B2, B3, C and D remain open.
 
 ### Aftermath AF-0004B
 

@@ -114,7 +114,8 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     Diff(),
     PlayerNormal(),
     IsHasPlayerNormal(false),
-    PersistTagsOnAIDeploy(false)
+    PersistTagsOnAIDeploy(false),
+    IsUseAdvancedAI(false)
 {
     /**
      *  Due to the changes made when addressing issues #632, 633, and 635, we
@@ -282,6 +283,7 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(SelfHealingStep);
     crc(BaseUnit.Count());
     crc(PersistTagsOnAIDeploy);
+    crc(IsUseAdvancedAI);
 }
 
 
@@ -443,6 +445,9 @@ void RulesClassExtension::Process(CCINIClass &ini)
  */
 void RulesClassExtension::Initialize(CCINIClass &ini)
 {
+    // Start each regular rules/scenario load with the documented default.
+    // Subsequent additions retain this value unless they explicitly override it.
+    IsUseAdvancedAI = false;
     Verses::Clear();
     ArmorTypeClass::One_Time();
     PrerequisiteGroupClass::One_Time();
@@ -842,6 +847,7 @@ bool RulesClassExtension::AI(CCINIClass& ini)
 
     AINavalYardAdjacency = ini.Get_Int(AI, "AINavalYardAdjacency", AINavalYardAdjacency);
     IsAIRepairBaseNodes = ini.Get_Bool(AI, "AIRepairBaseNodes", IsAIRepairBaseNodes);
+    IsUseAdvancedAI = ini.Get_Bool(AI, "UseAdvancedAI", IsUseAdvancedAI);
     IsAIDetectDisguise = ini.Get_Bool(AI, "AIDetectDisguise", IsAIDetectDisguise);
     AIHarvestersPerRefinery = ini.Get_IntList(AI, "HarvestersPerRefinery", AIHarvestersPerRefinery);
     IsAIOneHarvesterInSingleplayer = ini.Get_Bool(AI, "AIOneHarvesterInSingleplayer", IsAIOneHarvesterInSingleplayer);

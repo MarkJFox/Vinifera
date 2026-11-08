@@ -107,13 +107,49 @@ int HouseClassExt::_AI_Building()
         BASE_DEFENSE = -1
     };
 
-    if (BuildStructure != STRUCT_NONE) return TICKS_PER_SECOND;
+    const auto houseext = Extension::Fetch(this);
+    const bool advanced = houseext->Is_Advanced_AI_Enabled();
 
-    if (ConstructionYards.Count() == 0) return TICKS_PER_SECOND;
+    // Choosing Advanced AI does not start production. Keep the native house
+    // production permission and observer-house protection at the work boundary.
+    if (advanced) {
+        if (!IsStarted || houseext->IsObserver) {
+            return TICKS_PER_SECOND;
+        }
+    }
+
+    if (BuildStructure != STRUCT_NONE) {
+        if (!advanced || houseext->Has_Advanced_AI_Building_Production()) return TICKS_PER_SECOND;
+        // Only unstarted orders may be replaced after losing power or prerequisites.
+        if (BuildStructure >= STRUCT_FIRST && BuildStructure < BuildingTypes.Count() &&
+            houseext->Can_Advanced_AI_Build_Building(BuildingTypes[BuildStructure], nullptr, false)) {
+            if (const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(BuildingTypes[BuildStructure])) {
+                BuildStructure = choice->HeapID;
+                return TICKS_PER_SECOND;
+            }
+        }
+        BuildStructure = STRUCT_NONE;
+    }
+
+    if (ConstructionYards.Count() == 0) {
+        return TICKS_PER_SECOND;
+    }
+
+    if (advanced) {
+        // B1 serializes building starts; it does not replace Factory_AI or placement.
+        if (houseext->Has_Advanced_AI_Building_Production()) return TICKS_PER_SECOND;
+        if (const BuildingTypeClass* choice = houseext->Select_Advanced_AI_Building()) {
+            BuildStructure = choice->HeapID;
+            return TICKS_PER_SECOND;
+        }
+        // No infrastructure choice: continue through the existing planner below.
+    }
 
     BaseNodeClass* node = Base.Next_Buildable();
 
-    if (!node) return TICKS_PER_SECOND;
+    if (!node) {
+        return TICKS_PER_SECOND;
+    }
 
     /**
      *  Build some walls.
@@ -122,6 +158,10 @@ int HouseClassExt::_AI_Building()
         Base.Nodes.Delete(*node);
         AI_Build_Wall();
         return 1;
+    }
+
+    if (advanced && (node->Type < BASE_DEFENSE || node->Type >= BuildingTypes.Count())) {
+        return TICKS_PER_SECOND;
     }
 
     /**
@@ -151,7 +191,26 @@ int HouseClassExt::_AI_Building()
         node = Base.Next_Buildable();
     }
 
-    if (!node || node->Type == BASE_UNKNOWN) return TICKS_PER_SECOND;
+    if (!node || node->Type == BASE_UNKNOWN) {
+        return TICKS_PER_SECOND;
+    }
+
+    if (advanced) {
+        if (node->Type < STRUCT_FIRST || node->Type >= BuildingTypes.Count()) {
+            return TICKS_PER_SECOND;
+        }
+        // Native candidates do not need the infrastructure-only AIBuildThis policy.
+        if (!houseext->Can_Advanced_AI_Build_Building(BuildingTypes[node->Type], nullptr, false)) return TICKS_PER_SECOND;
+        const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(BuildingTypes[node->Type]);
+        if (!choice) return TICKS_PER_SECOND;
+        if (choice != BuildingTypes[node->Type]) {
+            // Leave the native node intact so it can be reconsidered after power.
+            BuildStructure = choice->HeapID;
+            DEV_DEBUG_INFO("AF-0009B1: house={} role=power-before-fallback building={} for={}\n",
+                static_cast<int>(HeapID), choice->Name(), BuildingTypes[node->Type]->Name());
+            return TICKS_PER_SECOND;
+        }
+    }
 
     /**
      *  In campaigns, or if we have enough power, or if we're trying to building a construction yard,
@@ -159,7 +218,7 @@ int HouseClassExt::_AI_Building()
      */
     BuildingTypeClass* b = BuildingTypes[node->Type];
 
-    if (Session.Type != GAME_NORMAL && !ScenExtension->IsUseMPAIBaseNodes && b->Drain + Drain > Power - PowerSurplus && b != Rule->BuildConst[0] && b->Drain > 0) {
+    if (!advanced && Session.Type != GAME_NORMAL && !ScenExtension->IsUseMPAIBaseNodes && b->Drain + Drain > Power - PowerSurplus && b != Rule->BuildConst[0] && b->Drain > 0) {
 
         /**
          *  In skirmish, try to build a power plant if there is insufficient power.

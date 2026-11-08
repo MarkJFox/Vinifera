@@ -331,4 +331,9 @@ public:
      *  Whether AI units that deploy should persist their tags, if any, on the building that the unit deployed into
      */
     bool PersistTagsOnAIDeploy;
+
+    /**
+     *  Opt-in AF-0009 planning for computer-controlled houses.
+     */
+    bool IsUseAdvancedAI;
 };

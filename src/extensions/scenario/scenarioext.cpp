@@ -209,6 +209,7 @@ void ScenarioClassExtension::Object_CRC(CRCEngine &crc) const
  */
 void ScenarioClassExtension::Init_Clear()
 {
+    HouseClassExtension::Clear_Advanced_AI_Log_State();
     IsIceDestruction = true;
     ScorePlayerColor = RGBStruct{ 253, 181, 28 }; // Default to TS GDI score color
     ScoreEnemyColor = RGBStruct{ 250, 28, 28 };   // Default to TS Nod score color
@@ -1875,6 +1876,9 @@ bool ScenarioClassExtension::Read_Scenario_INI(CCINIClass& ini, bool random)
     if (SessionExtension->IsSpawnerSession) {
         Scen->IsSkipScore |= SessionExtension->ExtOptions.IsSkipScoreScreen;
     }
+
+    // Once per successful scenario configuration, after every regular override.
+    DEV_DEBUG_INFO("AF-0009: UseAdvancedAI={}\n", RuleExtension->IsUseAdvancedAI ? "yes" : "no");
 
     /**
      *  Return with flag saying that the scenario file was read.

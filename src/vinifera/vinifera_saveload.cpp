@@ -62,6 +62,7 @@
 #include "radarevent.h"
 #include "rockettype.h"
 #include "rules.h"
+#include "rulesext.h"
 #include "saveload.h"
 #include "spawner.h"
 #include "savever.h"
@@ -1162,6 +1163,9 @@ static bool Vinifera_Load_Game_With_Context(const char* file_name, SaveLoadConte
     SessionExtension->Restore_Autosave_After_Load();
 
     DEBUG_INFO("LOADING GAME [{}] - Complete\n", formatted_file_name);
+
+    // A loaded game restores the saved rules instead of re-reading scenario INIs.
+    DEV_DEBUG_INFO("AF-0009: UseAdvancedAI={}\n", RuleExtension->IsUseAdvancedAI ? "yes" : "no");
 
     return true;
 }

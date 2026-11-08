@@ -1369,6 +1369,8 @@ ActionType BuildingClassExt::_What_Action(const Cell& cell, bool check_fog, bool
  */
 void BuildingClassExt::_Factory_AI()
 {
+    const auto houseext = Extension::Fetch(House);
+    const bool advanced_factory = Class->ToBuild == RTTI_BUILDINGTYPE && houseext->Is_Advanced_AI_Enabled();
     /*
     **  Handle any production tied to this building. Only computer controlled buildings have
     **  production attached to the building itself. The player uses the sidebar interface for
@@ -1446,6 +1448,27 @@ void BuildingClassExt::_Factory_AI()
                     auto btype_ext = Extension::Fetch(Class);
                     TechnoTypeClass const* ttype = Extension::Fetch(House)->Suggest_New_Object(Class->ToBuild, btype_ext->IsNaval ? PRODFLAG_NAVAL : PRODFLAG_NONE);
 
+                    // AF-0009B1: recheck at the actual start, including this
+                    // specific yard's Owner/BuiltAt contract. A second yard
+                    // must not start the same order while a building is pending.
+                    if (ttype && advanced_factory) {
+                        const auto buildingtype = static_cast<const BuildingTypeClass*>(ttype);
+                        if (houseext->IsObserver) {
+                            ttype = nullptr;
+                        } else if (houseext->Has_Advanced_AI_Building_Production()) {
+                            ttype = nullptr;
+                        } else if (!houseext->Can_Advanced_AI_Build_Building(buildingtype, this, false)) {
+                            ttype = nullptr;
+                        } else {
+                            // Re-evaluate late power loss before allocating a product.
+                            const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(buildingtype, this);
+                            ttype = choice;
+                            if (choice && choice != buildingtype) {
+                                House->BuildStructure = choice->HeapID;
+                            }
+                        }
+                    }
+
                     /*
                     **  If a suitable object type was selected for production, then start
                     **  producing it now.
@@ -1490,11 +1513,15 @@ void BuildingClassExt::_Factory_AI()
                             Factory = new FactoryClass;
                             if (Factory != nullptr) {
                                 if (!Factory->Set(*ttype, *House, false)) {
+                                    if (advanced_factory) houseext->Log_Advanced_AI_Error("factory-set-failed", static_cast<const BuildingTypeClass*>(ttype));
                                     delete Factory;
                                     Factory = nullptr;
                                 } else {
                                     House->Production_Begun(Factory->Get_Object());
-                                    Factory->Start(false);
+                                    const bool started = Factory->Start(false);
+                                    if (advanced_factory && !started) {
+                                        houseext->Log_Advanced_AI_Error("factory-start-failed", static_cast<const BuildingTypeClass*>(ttype));
+                                    }
                                 }
                             }
                         }

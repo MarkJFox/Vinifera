@@ -2016,8 +2016,8 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
  */
 unsigned Extension::Get_Save_Version_Number()
 {
-    // AF-0007B adds saved CanReplaceWalls, even if the bool fits existing padding.
-    unsigned version = 0x1F0000;
+    // AF-0009 saves the Rules switch, even if it fits existing padding.
+    unsigned version = 0x200000;
 
     /**
      *  For debug builds, offset the save file version.

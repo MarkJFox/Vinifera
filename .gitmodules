@@ -1,6 +1,6 @@
 [submodule "TSpp"]
 	path = TSpp
-	url = https://github.com/Vinifera-Developers/TSpp.git
+	url = https://github.com/MarkJFox/TSpp.git
 [submodule "SDL"]
 	path = SDL
 	url = https://github.com/libsdl-org/SDL.git
