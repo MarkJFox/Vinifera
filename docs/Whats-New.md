@@ -14,6 +14,23 @@ This page lists the history of changes across stable Vinifera releases and also 
 
 ### When updating Vinifera
 
+- Aftermath Advanced AI checks remaining eligible `AIBuildThis` types, builds ground and air defenses earlier, and adds production capacity when the factory speed bonus applies. It places paid wall segments around construction yards without gates and checks short harvester routes before placing refineries. The effective AI setting is included in the multiplayer scenario check. See [DTA-oriented base construction](AF-0009.md#dta-orientierter-basenbau-verteidigung-und-multiplayer).
+- Advanced AI prioritizes the gate-free construction-yard perimeter, builds defenses towards open approaches, requires at least one refinery per ground vehicle factory and prefers two. Replacement orders prioritize power and income. Multiplayer with Advanced AI enabled checks the planner revision. See [base construction and multiplayer](AF-0009.md#dta-orientierter-basenbau-verteidigung-und-multiplayer).
+- Advanced AI uses native `GuardRange` wall autofill on legal construction-yard perimeters, scales defenses to available funds and responds to surviving attackers that damaged buildings. Additional ground vehicle factories scale with supplied refineries up to the configured limits. See [base construction and multiplayer](AF-0009.md#dta-orientierter-basenbau-verteidigung-und-multiplayer).
+- Advanced AI gives `BuildPDefense` its own target for heavy ground defenses, allowing Nod to build Obelisks alongside light laser turrets as its economy grows.
+- Advanced AI follows up proven refinery sites after power and infrastructure construction. It uses additional vehicle factories to extend towards viable fields and prefers spaced sites when it cannot advance the base.
+- Advanced AI excludes small Tiberium remnants from the factory expansion shortlist and retries deferred refinery fields when newly placed infrastructure advances the base towards them.
+- Advanced AI can reserve a refinery site with a verified harvester route beyond current build range and use already planned infrastructure to extend towards it. Native placement rules apply before the refinery is ordered.
+- Advanced AI can build preventive base defenses against groups seen by the AI house. It matches weapons to the observed targets, checks local defensive coverage and places defenses on the threatened side while protecting refinery and factory access.
+- Advanced AI reacts sooner to visible infantry raids and rechecks weapon range and the current threat when a defensive turret is ready to place.
+- Advanced AI probes more approaches to Tiberium fields and uses the developed enemy-facing perimeter when placing heavy ground defenses.
+- Advanced AI can finish an expansion with a refinery on a longer verified harvester route after construction advances towards an unserved field. It responds to nearby armed threats before damage and can replace an early optional building order with affordable, powered local defenses.
+- Advanced AI rechecks its original construction goal after a power plant or turbine finishes. The refinery planner retains its verified site and checks the harvester route when choosing a site for the intervening power plant.
+- Advanced AI can search for refinery sites from reachable harvester approaches when its native search fails for a chosen field. It validates each derived site against the native AI building radius and existing refinery rules, then temporarily defers the field if both searches fail.
+- Aftermath AF-0009C3a lets Advanced AI plan radar, technology buildings and eligible upgrades before a team requests the unlocked units. It evaluates loaded prerequisite groups and producer assignments, protects the refinery reserve and checks for the next technology step after successful placement. Resource searches retain their existing intervals. Save basis stays `0x200000`. See [AF-0009C3a](AF-0009.md#technologieausbau-und-fortlaufender-basenbau-af-0009c3a).
+- Aftermath AF-0009C3 gives `UseAdvancedAI=yes` exclusive strategic building selection. The planner handles basic infrastructure, viable resource expansion, production demand and limited defenses. Native factories, payment and legal placement still execute the orders. Existing scenario nodes and the classic toggle path are retained. Save basis stays `0x200000`. Manual build, save/load and multiplayer validation are pending. See [AF-0009C3](AF-0009.md#eigenständige-gebäudeplanung-af-0009c3).
+- Aftermath AF-0009C2 coordinates B1 infrastructure, the existing base-node fallback and B2 expansion through one Advanced AI building planner. Factories validate the actual yard and report late power or budget blockers while retaining their current product through installment waits and placement retries. The existing `[AI] UseAdvancedAI` setting and save basis `0x200000` still apply. Manual build, save/load and multiplayer validation are pending. See [AF-0009C2](AF-0009.md#zentraler-bauplaner-und-auftragslebenszyklus-af-0009c2).
+- Aftermath AF-0009B2a adds read-only Advanced AI resource-field analysis, including tree-free Tiberium. Connected native cells are valued by current stock/type, distance, own refinery coverage, ground-zone access and enemy base proximity. It selects a diagnostic expansion target every 30 simulation seconds without changing building orders or placement. No new INI keys or saved state; save basis remains `0x200000`. Static review only; manual build/runtime validation is pending. See [AF-0009](AF-0009.md#ressourcenfelder-und-expansionsbewertung-af-0009b2a).
 - Aftermath AF-0009B1 (including B1a-B1e) adds opt-in `[AI] UseAdvancedAI=yes`; default `no` or no effective key keeps classic AI. Regular scenario overrides support the client toggle; no map/mode heuristics decide activation. Basic infrastructure uses a validated classic fallback and shared power planning with the existing Side priority: turbine upgrade, advanced plant, regular plant. Two new TS++ engine bindings are required. The saved switch participates in CRC; save basis is `0x200000`, so start a new game. The user confirmed a successful build and basic building/fallback/power behavior, including GDI turbines and Nod advanced plants. Temporary diagnostics were removed afterward; a new manual build/retest is required. Full multiplayer, save/load and regression validation remains open. See [AF-0009](AF-0009.md).
 - Aftermath AF-0007B adds opt-in BuildingType `CanReplaceWalls=no`. With `yes`, buildings can replace owned walls in `WallConnection.Types` under their actual occupation mask. Walls are removed after successful native Unlimbo, without a refund. The user confirmed placement on owned walls after the AF-0007B1 fix. Save basis is `0x1F0000`. Start a new game. Save/load, multiplayer and remaining edge cases are open. [AF-0007B](AF-0007B.md)
 - Aftermath's optional WallTower and building wall connections accept `WallTower=none` or an empty value and add BuildingType `ConnectsToWalls=no` / `WallConnection.Types=` for existing wall OverlayTypes. The user confirmed skirmish with `WallTower=none`, continued AI defense construction and correct wall frames. Save basis is `0x1E0000`. Start a new game. Save/load, multiplayer and remaining edge cases are open. [AF-0007A wall connections](AF-0007A.md#optional-walltower-and-building-wall-connections)
@@ -69,6 +86,72 @@ This page lists the history of changes across stable Vinifera releases and also 
 % :::
 
 ## Changelog
+
+### Aftermath AF-0009B2b2a - economic expansion decisions
+
+- Try bounded alternatives when the first resource target or refinery type
+  has no suitable native site. Probe reachable, uncovered stock and keep a
+  viable target through temporary budget shortages. Preserve the refinery
+  reserve, existing building queue and native placement fallback.
+- Consider an open native unit order alongside active team demand when
+  compatible production capacity is missing. Developer logs separate
+  resource and infrastructure blockers and identify factory products started
+  by the independent planner. Manual build and Ingame verification are pending.
+
+### Aftermath AF-0009B2b2 - independent Advanced AI base development
+
+- Continue base development when B1 and the native base plan have no suitable
+  order. Build missing production capacity or a direct technology prerequisite
+  for outstanding native team demand. Retain the native building queue,
+  power planning and building limits. Budget for existing factory balances
+  and a refinery reserve before starting optional construction.
+- Prefer reachable, profitable resource fields near native build anchors.
+  Use already needed infrastructure to move toward a stable target. Check
+  projected refinery coverage before a directed placement and confirm actual
+  coverage after buildup. Keep native placement and defense decisions.
+- No change to the save layout. Manual build, Ingame, multiplayer and
+  save/load verification are pending.
+
+### Aftermath AF-0009B2b1b - Advanced AI production diagnostics
+
+- Require an available, ready construction yard when choosing a building.
+  Preserve a directed expansion product and its target when the factory has
+  started but cannot yet afford its first installment.
+- Associate directed refineries with the target used for placement and retain
+  the existing refinery service requirements. Developer logs distinguish
+  expansion reserves, native orders, installment waits and placement results.
+  The existing power priorities, classic AI and save layout are retained.
+
+### Aftermath AF-0009B2b1 - resource-oriented building placement
+
+- Guide the first refinery and later refineries, needed power plants,
+  barracks, vehicle factories and aircraft production buildings toward
+  usable Tiberium. Rank several native search results by resource service,
+  progress and open access. Protect roads, resources and known factory exits.
+- Prefer fields near the current base edge while retaining active positional
+  targets. Keep existing building orders and native placement as the fallback.
+  Bounded diagnostics distinguish rejected sites, stock, prerequisites,
+  construction yards, credits and power.
+- Retain the existing save layout and TS++ bindings. Static review only.
+  Manual build and Ingame acceptance are pending.
+
+### Aftermath AF-0009B2b - resource-based base expansion
+
+- Use the B2a field ranking to guide a profitable additional refinery after
+  basic infrastructure. Keep a positional target and recheck live resources,
+  native ground access, refinery coverage, available funds and buildability.
+- Reuse the native placement search and factory exit path. An already needed
+  B1 power plant can move the base edge toward the field. Report service after
+  the new refinery is operational. Retry limits return unsuitable targets to
+  the regular building flow.
+- Reconstruct the expansion plan after scenario start or load. Existing
+  factory products resume through native placement. Static review is complete.
+  Manual build, Ingame and multiplayer acceptance are pending.
+
+### Aftermath AF-0009B2a - resource fields and target evaluation
+
+- Detect eight-neighbor Tiberium components from actual cell overlays, independently of spawner trees, and aggregate density units/credits per type. Keep disconnected small patches separate and choose real resource cells near the density-weighted center.
+- Rank reachable stock with distance, completed own refinery service and enemy base influence. Reuse native movement zones and existing map/type/value queries; no tree-only DTA search, random ranking, expansion buildings or production changes. Share periodic map snapshots across AI houses, reset derived caches on scenario/load, and bound Developer output to a summary plus six field lines per analysis. No persistent fields, TS++ changes, builds or automated tests. B2b placement/expansion remains open.
 
 ### Aftermath AF-0009B1 - initial Advanced AI base planning
 

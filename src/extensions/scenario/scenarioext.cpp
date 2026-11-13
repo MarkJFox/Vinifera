@@ -210,6 +210,7 @@ void ScenarioClassExtension::Object_CRC(CRCEngine &crc) const
 void ScenarioClassExtension::Init_Clear()
 {
     HouseClassExtension::Clear_Advanced_AI_Log_State();
+    HouseClassExtension::Clear_Advanced_AI_Resource_State();
     IsIceDestruction = true;
     ScorePlayerColor = RGBStruct{ 253, 181, 28 }; // Default to TS GDI score color
     ScoreEnemyColor = RGBStruct{ 250, 28, 28 };   // Default to TS Nod score color

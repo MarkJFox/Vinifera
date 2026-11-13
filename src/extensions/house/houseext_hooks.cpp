@@ -25,6 +25,7 @@
 #include "hooker_macros.h"
 #include "house.h"
 #include "houseext.h"
+#include "overlaytype.h"
 #include "houseext_init.h"
 #include "housetype.h"
 #include "language.h"
@@ -108,41 +109,12 @@ int HouseClassExt::_AI_Building()
     };
 
     const auto houseext = Extension::Fetch(this);
-    const bool advanced = houseext->Is_Advanced_AI_Enabled();
-
-    // Choosing Advanced AI does not start production. Keep the native house
-    // production permission and observer-house protection at the work boundary.
-    if (advanced) {
-        if (!IsStarted || houseext->IsObserver) {
-            return TICKS_PER_SECOND;
-        }
-    }
-
-    if (BuildStructure != STRUCT_NONE) {
-        if (!advanced || houseext->Has_Advanced_AI_Building_Production()) return TICKS_PER_SECOND;
-        // Only unstarted orders may be replaced after losing power or prerequisites.
-        if (BuildStructure >= STRUCT_FIRST && BuildStructure < BuildingTypes.Count() &&
-            houseext->Can_Advanced_AI_Build_Building(BuildingTypes[BuildStructure], nullptr, false)) {
-            if (const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(BuildingTypes[BuildStructure])) {
-                BuildStructure = choice->HeapID;
-                return TICKS_PER_SECOND;
-            }
-        }
-        BuildStructure = STRUCT_NONE;
-    }
-
-    if (ConstructionYards.Count() == 0) {
+    if (houseext->Is_Advanced_AI_Enabled()) {
+        houseext->Apply_Advanced_AI_Building_Plan(houseext->Plan_Advanced_AI_Building());
         return TICKS_PER_SECOND;
     }
-
-    if (advanced) {
-        // B1 serializes building starts; it does not replace Factory_AI or placement.
-        if (houseext->Has_Advanced_AI_Building_Production()) return TICKS_PER_SECOND;
-        if (const BuildingTypeClass* choice = houseext->Select_Advanced_AI_Building()) {
-            BuildStructure = choice->HeapID;
-            return TICKS_PER_SECOND;
-        }
-        // No infrastructure choice: continue through the existing planner below.
+    if (BuildStructure != STRUCT_NONE || ConstructionYards.Count() == 0) {
+        return TICKS_PER_SECOND;
     }
 
     BaseNodeClass* node = Base.Next_Buildable();
@@ -158,10 +130,6 @@ int HouseClassExt::_AI_Building()
         Base.Nodes.Delete(*node);
         AI_Build_Wall();
         return 1;
-    }
-
-    if (advanced && (node->Type < BASE_DEFENSE || node->Type >= BuildingTypes.Count())) {
-        return TICKS_PER_SECOND;
     }
 
     /**
@@ -195,30 +163,13 @@ int HouseClassExt::_AI_Building()
         return TICKS_PER_SECOND;
     }
 
-    if (advanced) {
-        if (node->Type < STRUCT_FIRST || node->Type >= BuildingTypes.Count()) {
-            return TICKS_PER_SECOND;
-        }
-        // Native candidates do not need the infrastructure-only AIBuildThis policy.
-        if (!houseext->Can_Advanced_AI_Build_Building(BuildingTypes[node->Type], nullptr, false)) return TICKS_PER_SECOND;
-        const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(BuildingTypes[node->Type]);
-        if (!choice) return TICKS_PER_SECOND;
-        if (choice != BuildingTypes[node->Type]) {
-            // Leave the native node intact so it can be reconsidered after power.
-            BuildStructure = choice->HeapID;
-            DEV_DEBUG_INFO("AF-0009B1: house={} role=power-before-fallback building={} for={}\n",
-                static_cast<int>(HeapID), choice->Name(), BuildingTypes[node->Type]->Name());
-            return TICKS_PER_SECOND;
-        }
-    }
-
     /**
      *  In campaigns, or if we have enough power, or if we're trying to building a construction yard,
      *  just proceed with building the base node.
      */
     BuildingTypeClass* b = BuildingTypes[node->Type];
 
-    if (!advanced && Session.Type != GAME_NORMAL && !ScenExtension->IsUseMPAIBaseNodes && b->Drain + Drain > Power - PowerSurplus && b != Rule->BuildConst[0] && b->Drain > 0) {
+    if (Session.Type != GAME_NORMAL && !ScenExtension->IsUseMPAIBaseNodes && b->Drain + Drain > Power - PowerSurplus && b != Rule->BuildConst[0] && b->Drain > 0) {
 
         /**
          *  In skirmish, try to build a power plant if there is insufficient power.
@@ -346,12 +297,14 @@ int HouseClassExt::_AI_Unit()
  */
 int HouseClassExt::_Expert_AI()
 {
+    const auto houseext = Extension::Fetch(this);
     /**
      *  If there is no enemy assigned to this house, then assign one now. The
      *  enemy that is closest is picked. However, don't pick an enemy if the
      *  base has not been established yet.
      */
     if (ExpertAITimer == 0) {
+        houseext->Trace_Advanced_AI_Production("economy", "native-expert-ai");
         if (Enemy == HOUSE_NONE && Session.Type != GAME_NORMAL && !Class->IsMultiplayPassive && Center != COORD_NONE) {
             int close = INT_MAX;
             HouseClass* enemy = nullptr;
@@ -479,6 +432,7 @@ int HouseClassExt::_Expert_AI()
                         break;
 
                     case STRATEGY_RAISE_MONEY:
+                        houseext->Trace_Advanced_AI_Production("native-emergency", "raise-money");
                         acted |= AI_Raise_Money(u);
                         break;
 
@@ -1391,10 +1345,29 @@ Cell HouseClassExt::_Find_Build_Location(BuildingTypeClass* btype, int(__fastcal
 
     }
 
+    const auto houseext = Extension::Fetch(this);
+    if (houseext->Is_Advanced_AI_Enabled()) {
+        if (!houseext->IsObserver && btype->IsWall && btype->ToOverlay && btype->ToOverlay->IsWall) {
+            return houseext->Find_Advanced_AI_Yard_Wall_Site(btype);
+        }
+        if (!houseext->IsObserver && houseext->Is_Advanced_AI_Defense_Type(btype)) {
+            return houseext->Find_Advanced_AI_Defense_Site(btype);
+        }
+        const Cell expansion = houseext->Find_Advanced_AI_Expansion_Placement(btype);
+        if (expansion != Cell(0, 0)) return expansion;
+    }
+
     /**
      *  Call the original function to find a location for land buildings.
      */
-    return HouseClass::Find_Build_Location(btype, callback, a3);
+    const Cell site = HouseClass::Find_Build_Location(btype, callback, a3);
+    if (site != Cell(0, 0) && btype->IsRefinery && houseext->Is_Advanced_AI_Enabled() && !houseext->IsObserver &&
+        !houseext->Has_Advanced_AI_Refinery_Route(btype, site)) {
+        DEV_DEBUG_INFO("AF-0009: house={} type={} site={},{} reason=no-short-harvester-route-for-native-site\n",
+            static_cast<int>(HeapID), btype->Name(), site.X, site.Y);
+        return Cell(0, 0);
+    }
+    return site;
 }
 
 
@@ -1649,9 +1622,12 @@ void HouseClassExt::_Production_Check()
         b = true;
     }
 
-    if (b) {
+    const bool advanced = house_ext->Is_Advanced_AI_Enabled();
+    if (b || advanced) {
         AI_Building();
     }
+    house_ext->Trace_Advanced_AI_Production("native-production-check",
+        b ? "building-pass" : advanced ? "advanced-building-pass" : "unit-orders-pending");
 }
 
 DEFINE_HOOK(0x004BD0E5, _HouseClass_AI_BuildNavalUnit_Patch, 0)
@@ -1729,6 +1705,10 @@ bool HouseClassExt::_AI_Has_Prerequisites(const TechnoTypeClass* type, DynamicVe
 DEFINE_HOOK(0x004C0F87, _HouseClass_AI_Raise_Money_Fix_Memory_Corruption, 0)
 {
     GET(HouseClass*, this_ptr, ESI);
+    // The sale and harvester branches remain native. Skip only the branch
+    // which inserts a refinery node and asks the classic planner to rebuild.
+    if (Extension::Fetch(this_ptr)->Is_Advanced_AI_Enabled()) return 0x004C10BC;
+
     GET(StructType, buildingtype, EAX);
     int buildable_index;
 

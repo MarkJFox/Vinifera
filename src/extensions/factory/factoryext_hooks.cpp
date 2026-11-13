@@ -14,6 +14,7 @@
 #include "asserthandler.h"
 #include "debughandler.h"
 #include "extension_globals.h"
+#include "building.h"
 #include "factory.h"
 #include "factoryext_init.h"
 #include "hooker.h"
@@ -156,12 +157,21 @@ void FactoryClassExt::_AI()
             **  continue the countdown. The idea being that by the time the next
             **  production step occurs, there may be sufficient funds available.
             */
-            if (cost > House->Available_Money()) {
+            const bool can_pay = cost <= House->Available_Money();
+            if (!can_pay) {
                 Set_Stage(Fetch_Stage() - 1);
             }
             else {
                 House->Spend_Money(cost);
                 Balance -= cost;
+            }
+
+            if (Object && Object->RTTI == RTTI_BUILDING) {
+                const auto houseext = Extension::Fetch(House);
+                const auto* type = static_cast<const BuildingClass*>(Object)->Class;
+                const char* reason = can_pay ? "installment-paid" : "installment-unaffordable";
+                houseext->Trace_Advanced_AI_Production("payment", reason, type, can_pay ? 0 : cost, this);
+                houseext->Trace_Advanced_AI_Building_Order("production", reason, type, this);
             }
 
             /**
@@ -205,6 +215,9 @@ void FactoryClassExt::_AI()
                 Set_Rate(0);
                 House->Spend_Money(Balance);
                 Balance = 0;
+                if (Object && Object->RTTI == RTTI_BUILDING) {
+                    Extension::Fetch(House)->Trace_Advanced_AI_Building_Order("production", "awaiting-placement", nullptr, this);
+                }
             }
         }
     }
@@ -241,6 +254,11 @@ bool FactoryClassExt::_Abandon()
     if (Object) {
 
         DEBUG_INFO("Abandoning production of {}\n", Object->Class_Of()->GivenName);
+        if (House && Object->RTTI == RTTI_BUILDING) {
+            if (const auto houseext = Extension::Fetch(House)) {
+                houseext->Trace_Advanced_AI_Building_Order("aborted", "factory-abandon", nullptr, this);
+            }
+        }
 
         /*
         **  Refund all money expended so far, back to the owner of the object under construction.

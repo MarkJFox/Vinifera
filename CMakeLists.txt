@@ -260,6 +260,7 @@ GlobSources(GLOB_RECURSE VINIFERA_SOURCES ${PROJECT_SOURCE_DIR})
 list(APPEND VINIFERA_SOURCES "${PROJECT_SOURCE_DIR}/extensions/aircraft/fixedwing.cpp")
 # Explicit registration also makes existing CMake build trees discover AF-0009B1.
 list(APPEND VINIFERA_SOURCES "${PROJECT_SOURCE_DIR}/extensions/house/houseext_advancedai.cpp")
+list(APPEND VINIFERA_SOURCES "${PROJECT_SOURCE_DIR}/extensions/house/houseext_resources.cpp")
 list(REMOVE_DUPLICATES VINIFERA_SOURCES)
 
 message(STATUS "Pulling in Hooker sources.")

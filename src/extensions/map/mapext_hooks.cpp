@@ -20,11 +20,17 @@
 #include "mouse.h"
 #include "object.h"
 #include "objecttype.h"
+#include "overlaytype.h"
 #include "rules.h"
 #include "syringe.h"
+#include "tactical.h"
 #include "techno.h"
 #include "tibsun_functions.h"
+#include "tibsun_globals.h"
 #include "vinifera_globals.h"
+
+#include <algorithm>
+#include <cstdlib>
 
 
 /**
@@ -54,6 +60,61 @@ public:
 std::vector<int> MapClassExt::RadiusCountTable = {1};
 std::vector<Cell> MapClassExt::RadiusOffsets = {Cell(0, 0)};
 std::vector<Cell> MapClassExt::OcclusionOffsets = {Cell(0, 0)};
+
+static Cell Sight_Occlusion_Offset(int x, int y)
+{
+    const auto sign = [](int value) { return (value > 0) - (value < 0); };
+    const int abs_x = std::abs(x);
+    const int abs_y = std::abs(y);
+    return Cell(static_cast<short>(abs_x >= abs_y ? -sign(x) : 0), static_cast<short>(abs_y >= abs_x ? -sign(y) : 0));
+}
+
+MapObserverSight Map_Observer_Sight(const Coord& origin, int range)
+{
+    const int shift = Tactical::Z_Lepton_To_Pixel(origin.Z) / -CELL_PIXEL_W * CELL_LEPTON_W;
+    const Cell center = Coord(origin.X + shift, origin.Y + shift, origin.Z).As_Cell();
+    return {center, center - origin.As_Cell() - Cell(2, 2), origin.Z / LEVEL_LEPTON_H, Map.In_Radar(center) ? range : 0};
+}
+
+bool MapObserverSight::Contains(const Cell& target) const
+{
+    // The caller has already checked that the target cell lies inside the playable map.
+    if (Range <= 0) return false;
+    const int x = target.X - Center.X;
+    const int y = target.Y - Center.Y;
+    const int abs_x = std::abs(x);
+    const int abs_y = std::abs(y);
+    if (std::max(abs_x, abs_y) + std::min(abs_x, abs_y) / 2 > Range) return false;
+    if (static_cast<long long>(x) * x + static_cast<long long>(y) * y > static_cast<long long>(Range) * Range) return false;
+    if (!Rule->IsRevealByHeight) return true;
+    // The same projected center and parent cell as Sight_From's height test.
+    const Cell occlusion = target - HeightOffset + Sight_Occlusion_Offset(x, y);
+    return Map.In_Radar(occlusion) && Map[occlusion].Height <= Level + 3;
+}
+
+bool Map_Defense_Line_Clear(const Cell& from, const Cell& to)
+{
+    if (!Map.In_Radar(from) || !Map.In_Radar(to)) return false;
+    const int x = to.X - from.X;
+    const int y = to.Y - from.Y;
+    const int steps = std::max(std::abs(x), std::abs(y));
+    const auto* source = Map[from].Cell_Building();
+    const int source_height = Map[from].Height;
+    const int target_height = Map[to].Height;
+    for (int step = 1; step < steps; ++step) {
+        const Cell position(static_cast<short>(from.X + x * step / steps), static_cast<short>(from.Y + y * step / steps));
+        if (!Map.In_Radar(position)) return false;
+        const auto& cell = Map[position];
+        const auto* building = cell.Cell_Building();
+        if (building && building != source) return false;
+        if (cell.Overlay >= OVERLAY_FIRST && cell.Overlay < OverlayTypes.Count()) {
+            const auto* overlay = OverlayTypes[cell.Overlay];
+            if (overlay && overlay->IsWall) return false;
+        }
+        if (cell.Height * steps > source_height * (steps - step) + target_height * step + steps) return false;
+    }
+    return true;
+}
 
 
 /**
@@ -155,19 +216,7 @@ void MapClassExt::_Calculate_Sight_Radius_If_Needed(int sight_range)
                 if (octagonal_distance == current_radius) {
                     RadiusOffsets.push_back(Cell(cell_x, cell_y));
 
-                    short parent_direction_x = 0;
-                    short parent_direction_y = 0;
-
-                    if (absolute_x > absolute_y) {
-                        parent_direction_x = (cell_x > 0) ? -1 : 1;
-                    } else if (absolute_y > absolute_x) {
-                        parent_direction_y = (cell_y > 0) ? -1 : 1;
-                    } else {
-                        parent_direction_x = (cell_x > 0) ? -1 : 1;
-                        parent_direction_y = (cell_y > 0) ? -1 : 1;
-                    }
-
-                    OcclusionOffsets.push_back(Cell(parent_direction_x, parent_direction_y));
+                    OcclusionOffsets.push_back(Sight_Occlusion_Offset(cell_x, cell_y));
                 }
             }
         }

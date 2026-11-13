@@ -28,6 +28,7 @@
 #include "msgbox.h"
 #include "netdlg.h"
 #include "rules.h"
+#include "rulesext.h"
 #include "session.h"
 #include "sessionext.h"
 #include "syringe.h"
@@ -35,6 +36,21 @@
 #include "technotypeext.h"
 #include "version.h"
 #include "vinifera_globals.h"
+#include "wwcrc.h"
+
+static unsigned Scenario_Sync_CRC()
+{
+    const unsigned crc = TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
+        BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC));
+    if (!RuleExtension || !RuleExtension->IsUseAdvancedAI) return crc;
+
+    // Compare the effective scenario setting after all Rules overrides.
+    CRCEngine combined;
+    combined(crc);
+    combined(0x41463039U); // AF09
+    combined(13U); // Advanced AI planner revision.
+    return static_cast<unsigned>(combined());
+}
 
 /**
  *  Extend the existing FRAMESYNC ScenarioCRC contract with canonical type
@@ -43,8 +59,7 @@
  */
 DEFINE_HOOK(0x005B35C0, _Send_FrameSync_Custom_Foundation_CRC, 5)
 {
-    R->EAX(TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
-        BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC)));
+    R->EAX(Scenario_Sync_CRC());
     return 0x005B35C5;
 }
 
@@ -410,8 +425,7 @@ static RetcodeType _Process_Receive_Packet(ConnManClass* net, char* multi_packet
      *  but we must check the ScenarioCRC value.
      */
     else if (event->Type == EVENT_FRAMESYNC) {
-        if (event->Data.FrameInfo.CRC != TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
-            BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC))) {
+        if (event->Data.FrameInfo.CRC != Scenario_Sync_CRC()) {
             return (RC_SCENARIO_MISMATCH);
         }
         their[index].timing = *timer;

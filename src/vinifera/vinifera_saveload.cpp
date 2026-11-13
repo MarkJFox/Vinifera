@@ -1164,6 +1164,8 @@ static bool Vinifera_Load_Game_With_Context(const char* file_name, SaveLoadConte
 
     DEBUG_INFO("LOADING GAME [{}] - Complete\n", formatted_file_name);
 
+    // B2a snapshots are derived from the restored world, never loaded from the save.
+    HouseClassExtension::Clear_Advanced_AI_Resource_State();
     // A loaded game restores the saved rules instead of re-reading scenario INIs.
     DEV_DEBUG_INFO("AF-0009: UseAdvancedAI={}\n", RuleExtension->IsUseAdvancedAI ? "yes" : "no");
 

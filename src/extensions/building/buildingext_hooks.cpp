@@ -1362,6 +1362,22 @@ ActionType BuildingClassExt::_What_Action(const Cell& cell, bool check_fog, bool
 }
 
 
+// Exit_Object has looked up the completed product's type in Base.Nodes.
+// Discard the result for autonomous buildings, then let the native no-node
+// branch choose the free site or upgrade target and execute placement.
+DEFINE_HOOK(0x0042D3E6, _BuildingClass_Exit_Object_Advanced_AI_Free_Site, 6)
+{
+    if (!RuleExtension || !RuleExtension->IsUseAdvancedAI) return 0;
+    GET(BuildingClass*, yard, ESI);
+    GET(BuildingClass*, product, EDI);
+    const auto houseext = Extension::Fetch(yard->House);
+    // A legacy WallTower product can still need its native companion node.
+    if (houseext->Is_Advanced_AI_Enabled() && !houseext->IsObserver && product->Class != Rule->WallTower) {
+        R->EAX(0);
+    }
+    return 0;
+}
+
 /**
  *  Reimplementation of BuildingClass::Factory_AI.
  *
@@ -1378,8 +1394,24 @@ void BuildingClassExt::_Factory_AI()
     */
     if (Factory != nullptr && Factory->Has_Completed() && PlacementDelay == 0) {
         TechnoClass* product = Factory->Get_Object();
+        const auto* product_type = advanced_factory && product && product->RTTI == RTTI_BUILDING
+            ? static_cast<const BuildingClass*>(product)->Class : nullptr;
+        const int product_id = product_type ? product->ID : -1;
+        const Cell target = advanced_factory ? houseext->Advanced_AI_Expansion_Target() : Cell(0, 0);
 
-        switch (Exit_Object(product)) {
+        const ExitType exit = advanced_factory
+            ? houseext->Exit_Advanced_AI_Expansion_Product(this, product)
+            : Exit_Object(product);
+        if (advanced_factory) {
+            const char* reason = exit == EXIT_NORMAL ? "placed" :
+                exit == EXIT_TRY_AGAIN ? "placement-retry" : "placement-rejected";
+            houseext->Trace_Advanced_AI_Production("placement", reason, nullptr, 0, Factory);
+            houseext->Trace_Advanced_AI_Building_Order("placement", reason, nullptr, Factory, &target);
+            if (exit == EXIT_FAILED && product && product->RTTI == RTTI_BUILDING) {
+                houseext->Defer_Advanced_AI_Building_Type(static_cast<const BuildingClass*>(product)->Class);
+            }
+        }
+        switch (exit) {
 
             /*
             **  If the object could not leave the factory, then either request
@@ -1409,6 +1441,7 @@ void BuildingClassExt::_Factory_AI()
             Factory->Completed();
             delete Factory;
             Factory = nullptr;
+            if (advanced_factory) houseext->Report_Advanced_AI_Building_Completed(product_type, product_id);
             break;
 
         default:
@@ -1431,7 +1464,10 @@ void BuildingClassExt::_Factory_AI()
                 **  If production has halted, then just abort production and make the
                 **  funds available for something else.
                 */
-                if (PlacementDelay == 0 && !Factory->Is_Building()) {
+                if (PlacementDelay == 0 && !Factory->Is_Building() && (!advanced_factory || !Factory->Has_Completed())) {
+                    if (advanced_factory) {
+                        houseext->Trace_Advanced_AI_Production("factory", "stopped-product-abandoned", nullptr, 0, Factory);
+                    }
                     Factory->Abandon();
                     delete Factory;
                     Factory = nullptr;
@@ -1444,28 +1480,30 @@ void BuildingClassExt::_Factory_AI()
                 **  money available. In cases where there is no practical money left, then
                 **  production can never complete -- don't bother starting it.
                 */
-                if (House->IsStarted && House->Available_Money() > 10) {
+                if (House->IsStarted && (advanced_factory || House->Available_Money() > 10)) {
+                    if (advanced_factory && House->BuildStructure != STRUCT_NONE &&
+                        (House->BuildStructure < STRUCT_FIRST || House->BuildStructure >= BuildingTypes.Count())) {
+                        houseext->Trace_Advanced_AI_Building_Order("factory-check", "order-not-buildable");
+                        return;
+                    }
                     auto btype_ext = Extension::Fetch(Class);
                     TechnoTypeClass const* ttype = Extension::Fetch(House)->Suggest_New_Object(Class->ToBuild, btype_ext->IsNaval ? PRODFLAG_NAVAL : PRODFLAG_NONE);
 
-                    // AF-0009B1: recheck at the actual start, including this
-                    // specific yard's Owner/BuiltAt contract. A second yard
-                    // must not start the same order while a building is pending.
+                    // Recheck the actual yard and current power. Only the house
+                    // planner may replace an unstarted order with a power plant.
                     if (ttype && advanced_factory) {
-                        const auto buildingtype = static_cast<const BuildingTypeClass*>(ttype);
-                        if (houseext->IsObserver) {
-                            ttype = nullptr;
-                        } else if (houseext->Has_Advanced_AI_Building_Production()) {
-                            ttype = nullptr;
-                        } else if (!houseext->Can_Advanced_AI_Build_Building(buildingtype, this, false)) {
-                            ttype = nullptr;
-                        } else {
-                            // Re-evaluate late power loss before allocating a product.
-                            const BuildingTypeClass* choice = houseext->Prioritize_Advanced_AI_Power(buildingtype, this);
-                            ttype = choice;
-                            if (choice && choice != buildingtype) {
-                                House->BuildStructure = choice->HeapID;
+                        const auto* type = static_cast<const BuildingTypeClass*>(ttype);
+                        const auto status = houseext->Check_Advanced_AI_Building_Start(type, this);
+                        if (status != AdvancedAIBuildingStart::Ready) {
+                            const char* reason = HouseClassExtension::Advanced_AI_Building_Start_Reason(status);
+                            const char* phase = status == AdvancedAIBuildingStart::NoReadyYard ? "factory-yard" : "factory-check";
+                            houseext->Trace_Advanced_AI_Building_Order(phase, reason, type);
+                            if (status == AdvancedAIBuildingStart::NeedsPower) {
+                                houseext->Trace_Advanced_AI_Production("factory-power", "late-power-replan", type, 11);
+                            } else if (status == AdvancedAIBuildingStart::InsufficientFunds) {
+                                houseext->Trace_Advanced_AI_Production("factory-funds", reason, type, 11);
                             }
+                            return;
                         }
                     }
 
@@ -1510,18 +1548,43 @@ void BuildingClassExt::_Factory_AI()
                         **  If everything is okay, create the factory.
                         */
                         if (allowed_factory) {
+                            const auto* buildingtype = advanced_factory ? static_cast<const BuildingTypeClass*>(ttype) : nullptr;
+                            if (buildingtype) {
+                                if (!houseext->Begin_Advanced_AI_Building_Attempt()) return;
+                                const Cell goal = houseext->Advanced_AI_Expansion_Target();
+                                if (const char* reason = houseext->Validate_Advanced_AI_Expansion_Start(buildingtype)) {
+                                    houseext->Reject_Advanced_AI_Building_Start(buildingtype);
+                                    houseext->Trace_Advanced_AI_Building_Order("factory-check", reason, buildingtype, nullptr, &goal);
+                                    return;
+                                }
+                                houseext->Trace_Advanced_AI_Building_Order("factory-check", "startable", buildingtype);
+                            }
+
+                            const char* start_result = "allocation-failed";
                             Factory = new FactoryClass;
                             if (Factory != nullptr) {
                                 if (!Factory->Set(*ttype, *House, false)) {
+                                    start_result = "factory-set-failed";
                                     if (advanced_factory) houseext->Log_Advanced_AI_Error("factory-set-failed", static_cast<const BuildingTypeClass*>(ttype));
                                     delete Factory;
                                     Factory = nullptr;
                                 } else {
                                     House->Production_Begun(Factory->Get_Object());
                                     const bool started = Factory->Start(false);
-                                    if (advanced_factory && !started) {
-                                        houseext->Log_Advanced_AI_Error("factory-start-failed", static_cast<const BuildingTypeClass*>(ttype));
+                                    if (buildingtype) {
+                                        // A successful Set owns the slot, including when the first payment fails.
+                                        const bool running = Factory->Is_Building();
+                                        start_result = started ? "started" :
+                                            running ? "first-payment-pending" : "factory-start-failed";
+                                        if (!started && !running) houseext->Log_Advanced_AI_Error("factory-start-failed", buildingtype);
                                     }
+                                }
+                            }
+                            if (buildingtype) {
+                                houseext->Trace_Advanced_AI_Production("factory-start", start_result, buildingtype, 11, Factory);
+                                houseext->Trace_Advanced_AI_Building_Order("factory-start", start_result, buildingtype, Factory);
+                                if (houseext->Report_Advanced_AI_Expansion_Start(buildingtype, Factory)) {
+                                    houseext->Reject_Advanced_AI_Building_Start(buildingtype);
                                 }
                             }
                         }
@@ -3610,6 +3673,36 @@ DEFINE_HOOK(0x0042AA8B, _BuildingClass_Unlimbo_ConYard_PlacementCenter_Patch, 6)
 }
 
 
+// Observe only actual damage from the original low-level call.
+static ResultType __fastcall Observe_Advanced_AI_Building_Damage(BuildingClass* building, void*, int& damage,
+    int distance, const WarheadTypeClass* warhead, const ObjectClass* source, bool forced, bool no_crew)
+{
+    HouseClassExtension* defender = nullptr;
+    int attacker_id = -1;
+    Cell target(0, 0);
+    const int strength = building->Strength;
+    if (RuleExtension && RuleExtension->IsUseAdvancedAI && source && strength > 0 && damage > 0) {
+        if (source->RTTI == RTTI_AIRCRAFT || source->RTTI == RTTI_UNIT || source->RTTI == RTTI_INFANTRY) {
+            const auto* attacker = static_cast<const TechnoClass*>(source);
+            auto* house = building->House;
+            if (house && attacker->House && attacker->House != house && !house->Is_Ally(attacker->House)) {
+                auto* extension = Extension::Fetch(house);
+                if (extension && extension->Is_Advanced_AI_Enabled() && !extension->IsObserver) {
+                    defender = extension;
+                    attacker_id = attacker->ID;
+                    target = building->Get_Cell();
+                }
+            }
+        }
+    }
+
+    const auto result = building->TechnoClass::Take_Damage(damage, distance, warhead, source, forced, no_crew);
+    if (defender && result != RESULT_NONE && result != RESULT_ALREADY_DESTROYED && building->Strength < strength) {
+        defender->Record_Advanced_AI_Building_Hit(attacker_id, target, strength - building->Strength);
+    }
+    return result;
+}
+
 /**
  *  Main function for patching the hooks.
  */
@@ -3634,6 +3727,7 @@ void BuildingClassExtension_Hooks()
     Patch_Jump(0x0042F590, &BuildingClassExt::_Toggle_Primary);
     Patch_Jump(0x0042C340, &BuildingClassExt::_Assign_Rally_Point);
     Patch_Jump(0x00434FE0, &BuildingClassExt::_Factory_AI);
+    Patch_Call(0x0042B48C, &Observe_Advanced_AI_Building_Damage); // BuildingClass::Take_Damage -> TechnoClass::Take_Damage.
     Patch_Jump(0x0042EBD0, static_cast<ActionType(BuildingClassExt::*)(ObjectClass const*, bool)>(&BuildingClassExt::_What_Action));
     Patch_Jump(0x0042EED0, static_cast<ActionType(BuildingClassExt::*)(const Cell&, bool, bool) const>(&BuildingClassExt::_What_Action));
     Patch_Jump(0x0043AF60, &BuildingClassExt::_Fetch_Super_Weapon);
