@@ -78,6 +78,7 @@ DynamicVectorClass<TheaterTypeClass *> TheaterTypes;
 DynamicVectorClass<ArmorTypeClass *> ArmorTypes;
 DynamicVectorClass<SpawnManagerClass *> SpawnManagers;
 DynamicVectorClass<RocketTypeClass*> RocketTypes;
+DynamicVectorClass<AdvancedAITacticTypeClass *> AdvancedAITacticTypes;
 DynamicVectorClass<MouseTypeClass *> MouseTypes;
 DynamicVectorClass<ActionTypeClass *> ActionTypes;
 DynamicVectorClass<PrerequisiteGroupClass *> PrerequisiteGroups;

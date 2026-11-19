@@ -29,6 +29,7 @@
 #include "tactical.h"
 #include "tag.h"
 #include "technoext.h"
+#include "target.h"
 #include "technotype.h"
 #include "technotypeext.h"
 #include "tibsun_globals.h"
@@ -933,6 +934,31 @@ DEFINE_HOOK(0x004A3E25, _FootClass_Spring_Entered_By_Cloaked_Units_Patch, 6)
             tag->Spring(TEVENT_PLAYER_ENTERED, this_ptr, this_ptr->PositionCell);
         }
     }    
+
+    return 0;
+}
+
+
+/**
+ *  Aftermath: FootClass::Rescue_Mission rates a unit as defender for the native
+ *  base defense response (TechnoClass::Base_Is_Attacked). A computer unit that
+ *  cannot hit the attacker at its current height, for example a ground unit
+ *  against a flying jumpjet, returns 0 so it is not sent. Applies with and
+ *  without the Advanced AI.
+ *
+ *  0x004A4C40: PUSH ESI / PUSH EDI / MOV EDI,[ESP+0Ch] (6 bytes, replayed on 0).
+ *  0x004A4C3B: RETN 4 of the preceding function; at entry it returns to the caller.
+ */
+DEFINE_HOOK(0x004A4C40, _FootClass_Rescue_Mission_Air_Target_Patch, 6)
+{
+    GET(FootClass*, this_ptr, ECX);
+    GET_STACK(AbstractClass*, target, 0x4);
+
+    if (this_ptr != nullptr && target != nullptr && this_ptr->House != nullptr && !this_ptr->House->Is_Human_Player() &&
+        Is_Target_Object(target) && !Techno_Can_Hit_Target_Height(this_ptr, target)) {
+        R->EAX(0);
+        return 0x004A4C3B;
+    }
 
     return 0;
 }

@@ -61,6 +61,7 @@
 #include "prerequisitegroup.h"
 #include "radarevent.h"
 #include "rockettype.h"
+#include "advaitactictype.h"
 #include "rules.h"
 #include "rulesext.h"
 #include "saveload.h"
@@ -458,6 +459,7 @@ bool Vinifera_Put_All(IStream *pStm, bool save_net)
     if (FAILED(Vinifera_Save_Vector(pStm, RocketTypes, "RocketTypes"))) { return false; }
     if (FAILED(Vinifera_Save_Vector(pStm, SpawnManagers, "SpawnManagers"))) { return false; }
     if (FAILED(Vinifera_Save_Vector(pStm, PrerequisiteGroups, "PrerequisiteGroups"))) { return false; }
+    if (FAILED(Vinifera_Save_Vector(pStm, AdvancedAITacticTypes, "AdvancedAITacticTypes"))) { return false; }
 
     /**
      *  Save houses' unit tracker data.
@@ -705,6 +707,7 @@ bool Vinifera_Get_All(IStream *pStm, bool load_net)
     if (FAILED(Vinifera_Load_Vector(pStm, RocketTypes, "RocketTypes"))) { return false; }
     if (FAILED(Vinifera_Load_Vector(pStm, SpawnManagers, "SpawnManagers"))) { return false; }
     if (FAILED(Vinifera_Load_Vector(pStm, PrerequisiteGroups, "PrerequisiteGroups"))) { return false; }
+    if (FAILED(Vinifera_Load_Vector(pStm, AdvancedAITacticTypes, "AdvancedAITacticTypes"))) { return false; }
 
     /**
      *  Load houses' unit tracker data.

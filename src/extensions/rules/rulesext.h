@@ -336,4 +336,52 @@ public:
      *  Opt-in AF-0009 planning for computer-controlled houses.
      */
     bool IsUseAdvancedAI;
+
+    /**
+     *  AF-0009U: DTA-style tactic based unit production. Only effective when
+     *  IsUseAdvancedAI is enabled and outside of campaign missions.
+     */
+    bool IsAdvancedAIUnitProduction;
+    double AdvancedAISameUnitAntiBias;
+    double AdvancedAIOverweightedArmorTypeAntiBias;
+    int AdvancedAIOffensiveWeaponValueMultiplier;
+    int AdvancedAISkipInfantryProductionValueThreshold;
+    int AdvancedAIConditionalSkipInfantryProductionValueThreshold;
+    int AdvancedAIVulnerableBuildingMaxThreat;
+    int AdvancedAILightlyDefendedBuildingMaxThreat;
+    int AdvancedAIMaxTeamSize;
+    int AdvancedAITeamInfantryCostPunishmentThreshold;
+    int AdvancedAICheapInfantryCostThreshold;
+    int AdvancedAITeamCheapInfantryMax;
+    int AdvancedAITacticSelectionDelay[DIFF_COUNT];
+    bool IsAdvancedAISelfDefense;
+    bool IsAdvancedAIEngineerCapture;
+
+    /**
+     *  AF-0009U: Keep the built-in default tactics after custom ones of the
+     *  same category (otherwise a custom list replaces them).
+     */
+    bool IsAdvancedAIKeepDefaultTactics;
+
+    /**
+     *  AF-0009U: Spread defenses placed without a threat over the important
+     *  buildings of the base instead of grouping them at the construction yard.
+     */
+    bool IsAdvancedAIDefenseSpread;
+
+    /**
+     *  AF-0009U: Credits above this amount count as surplus: teams may grow past
+     *  their MaxCost and the defense goals rise (0 = off).
+     */
+    int AdvancedAIRichFunds;
+    int AdvancedAIHarvestersPerRefinery;
+
+    /**
+     *  Aftermath: Extra path cost per harmful vein cell for computer units
+     *  without ImmuneToVeins. 0 disables the vein avoidance.
+     */
+    double AIVeinPathCost;
+
+private:
+    void AdvancedAITactics(CCINIClass& ini);
 };

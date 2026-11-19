@@ -10,12 +10,21 @@
 #pragma once
 
 #include "abstractext.h"
+#include "advaitactictype.h"
 #include "detach_listener.h"
 #include "house.h"
 #include "housetype.h"
+#include "typelist.h"
 
 
 class FactoryClass;
+class TeamClass;
+class TechnoClass;
+class UnitTypeClass;
+class AircraftTypeClass;
+class BuildingClass;
+class BuildingTypeClass;
+class TechnoTypeClass;
 struct AdvancedAIResourceAnalysis;
 
 enum class AdvancedAIBuildingStart {
@@ -57,6 +66,64 @@ struct AdvancedAIBuildingPlan
     const BuildingTypeClass* Type = nullptr;
     const char* Source = nullptr;
     AdvancedAIPowerGoal PowerGoal{};
+};
+
+/**
+ *  AF-0009U: State of an adopted Advanced AI tactic (ported from DTA).
+ */
+template <typename T> struct AdvAITacticInfo
+{
+    AdvAITacticInfo() : Tactic((T)-1), SelectionFrame(0), Duration(0) {}
+    AdvAITacticInfo(T tactic, int selectionframe, int duration) : Tactic(tactic), SelectionFrame(selectionframe), Duration(duration) {}
+
+    T Tactic;
+    int SelectionFrame;
+    int Duration;
+
+    int EndFrame() const { return SelectionFrame + Duration; }
+};
+
+
+struct AttemptedBuildingCaptureStruct
+{
+    Cell BuildingLocation;
+    int Frame;
+};
+
+
+class TechnoTypeClassExtension;
+
+struct EnemyStrengthStruct
+{
+    int None;
+    int Light;
+    int Heavy;
+
+    int Total() const { return None + Light + Heavy; }
+    void Clear() { None = 0; Light = 0; Heavy = 0; }
+    void Add_Techno_Type(const TechnoTypeClassExtension* technotypeext);
+    void Add_Techno_Type_Half_Weight(const TechnoTypeClassExtension* technotypeext);
+    void Add_Techno_Type_AntiAir(const TechnoTypeClassExtension* technotypeext);
+};
+
+
+enum class AdvancedAINavalOnlyState
+{
+    NOT_CHECKED = 0,
+    NORMAL = 1,
+    NAVAL_ONLY = 2
+};
+
+
+struct AdvancedAIUnitStartBudget
+{
+    long long Uncommitted = 0;
+    long long Cost = 0;
+    long long Reserve = 0;
+    const char* ReserveReason = "none";
+    const char* Blocked = nullptr;
+    // AF-0009U: The house's build request no longer fits (dock capacity or team budget).
+    bool ClearRequest = false;
 };
 
 
@@ -109,6 +176,9 @@ public:
 
     // Shared AF-0009 entry points; these methods add no per-house saved state.
     bool Is_Advanced_AI_Enabled() const;
+    AdvancedAIUnitStartBudget Check_Advanced_AI_Unit_Start(const TechnoTypeClass* type) const;
+    void Trace_Advanced_AI_Unit_Start(const TechnoTypeClass* type, const AdvancedAIUnitStartBudget& budget,
+        const char* outcome) const;
     AdvancedAIBuildingPlan Plan_Advanced_AI_Building();
     void Apply_Advanced_AI_Building_Plan(const AdvancedAIBuildingPlan& plan);
     AdvancedAIBuildingStart Check_Advanced_AI_Building_Start(const BuildingTypeClass* type, const BuildingClass* yard) const;
@@ -154,11 +224,13 @@ public:
     Cell Find_Advanced_AI_Yard_Wall_Site(const BuildingTypeClass* type, const Cell* placed = nullptr,
         int* autofill = nullptr) const;
     bool Is_Advanced_AI_Defense_Type(const BuildingTypeClass* type) const;
-    void Record_Advanced_AI_Building_Hit(int attacker_id, const Cell& target, int damage);
+    void Record_Advanced_AI_Building_Hit(int attacker_id, const Cell& target, int damage, bool base_hit);
     Cell Advanced_AI_Defense_Focus(const BuildingTypeClass* type) const;
     Cell Find_Advanced_AI_Defense_Site(BuildingTypeClass* type, const Cell* required_focus = nullptr, int range = 0,
         const AdvancedAIDefenseFocus* threat = nullptr) const;
     bool Advanced_AI_Ordered_Defense_Focus(const BuildingTypeClass* type, AdvancedAIDefenseFocus& focus) const;
+    long long Advanced_AI_Defense_Start_Reserve(const BuildingTypeClass* type) const;
+    TechnoClass* Advanced_AI_Primary_Base_Attacker(long long& damage) const;
     void Retry_Advanced_AI_Defense_Placement(const BuildingTypeClass* type) const;
     bool Has_Advanced_AI_Refinery_Route(const BuildingTypeClass* type, const Cell& site) const;
     long long Advanced_AI_Refinery_Reserve() const;
@@ -166,16 +238,37 @@ public:
     const char* Validate_Advanced_AI_Expansion_Start(const BuildingTypeClass* type);
     bool Report_Advanced_AI_Expansion_Start(const BuildingTypeClass* type, FactoryClass* factory);
     Cell Advanced_AI_Expansion_Target() const;
+    bool Has_Advanced_AI_Expansion_Site() const;
+    const BuildingTypeClass* Select_Advanced_AI_Expansion_Creep(bool refinery_only, const char*& reason);
     Cell Find_Advanced_AI_Expansion_Placement(BuildingTypeClass* type);
     ExitType Exit_Advanced_AI_Expansion_Product(BuildingClass* yard, const TechnoClass* product);
 
+    // AF-0009U: Savings goal of the building planner, respected by unit starts.
+    void Request_Advanced_AI_Savings(long long amount, const char* reason, bool economy) const;
+    void Clear_Advanced_AI_Economy_Savings() const;
+    bool Is_Advanced_AI_Economy_Phase_Limited(const TechnoTypeClass* type) const;
+
 private:
+    void Reserve_Advanced_AI_Infrastructure(const TechnoClass* building_product, AdvancedAIUnitStartBudget& budget) const;
+    void Reserve_Advanced_AI_Savings(const TechnoTypeClass* type, AdvancedAIUnitStartBudget& budget) const;
+    bool Needs_Advanced_AI_Recovery_Unit(const UnitTypeClass* type) const;
     const BuildingTypeClass* Select_Advanced_AI_Preventive_Defense(AdvancedAIPowerGoal& goal,
         const BuildingTypeClass* required = nullptr, bool urgent_only = false);
     const BuildingTypeClass* Select_Advanced_AI_Technology(const char*& reason, long long& minimum, AdvancedAIPowerGoal& goal);
     const BuildingTypeClass* Select_Advanced_AI_Capacity(const char*& reason, long long& minimum, AdvancedAIPowerGoal& goal) const;
     const BuildingTypeClass* Select_Advanced_AI_Yard_Wall() const;
     const BuildingTypeClass* Select_Advanced_AI_Wall_Prerequisite();
+    const BuildingTypeClass* Select_Advanced_AI_Air_Defense_Prerequisite();
+    const BuildingTypeClass* Select_Advanced_AI_Aircraft_Dock();
+
+public:
+    static bool Advanced_AI_Aircraft_Needs_Dock(const AircraftTypeClass* type);
+    void Advanced_AI_Aircraft_Dock_Balance(const AircraftTypeClass* type, int& aircraft, int& docks) const;
+    const char* Advanced_AI_Unit_Start_Limit(const TechnoTypeClass* type) const;
+    static bool Advanced_AI_Can_Hit_Air(const TechnoTypeClass* type);
+    int Advanced_AI_Air_Attackers() const;
+
+private:
     const BuildingTypeClass* Select_Advanced_AI_Replacement(bool slot_free, AdvancedAIPowerGoal& goal);
     AdvancedAIBuildingPlan Resume_Advanced_AI_Power_Goal();
     const BuildingTypeClass* Resume_Advanced_AI_Refinery(const BuildingTypeClass* desired, AdvancedAIPowerGoal& goal);
@@ -190,6 +283,60 @@ private:
         const FactoryClass* replacing = nullptr) const;
     void Release_Advanced_AI_Building_Order(const char* reason);
     void Interrupt_Advanced_AI_Development();
+
+public:
+    /**
+     *  AF-0009U: DTA-style Advanced AI unit production and tactics.
+     */
+    bool Is_Advanced_AI_Unit_Production() const;
+    int AdvAI_AI_Unit();
+    int AdvAI_AI_Naval_Unit();
+    int AdvAI_AI_Infantry();
+    int AdvAI_AI_Aircraft();
+    void AdvAI_Expert_AI();
+    TeamClass* Get_Team_In_Production(int& id, RTTIType for_type, ProductionFlags prodflags) const;
+    void Fill_Owned_Buildings_List(DynamicVectorClass<BuildingTypeClass*>& owned) const;
+    bool AdvAI_Can_Produce(const TechnoTypeClass* type, DynamicVectorClass<BuildingTypeClass*>& owned) const;
+    const TechnoTypeClass* AdvAI_Scripted_Team_Need(RTTIType typertti, bool naval, DynamicVectorClass<BuildingTypeClass*>& owned) const;
+    void AdvAI_Scripted_Team_AI();
+    bool AdvAI_Is_Outnumbered() const;
+    bool AdvAI_Is_Disadvantaged() const;
+    bool AdvAI_Is_Recently_Attacked() const;
+    void Assign_AdvAI_Tactic(AdvAITacticType tactic, int expected_duration);
+    void Assign_AdvAI_Air_Tactic(AdvAIAirTacticType airtactic, int expected_duration);
+    void Assign_AdvAI_Naval_Tactic(AdvAINavalTacticType navaltactic, int expected_duration);
+    void AdvAI_Bias_Team_Strength_Ratios_By_Enemy_Strength(TeamClass* team) const;
+    void AdvAI_Set_Ground_Team_Desired_Ratios(TeamClass* team, AdvAITacticType tacticoverride = TACTIC_NONE) const;
+    void AdvAI_Set_Aircraft_Team_Desired_Ratios(TeamClass* team) const;
+    void AdvAI_Set_Naval_Team_Desired_Ratios(TeamClass* team) const;
+    bool Enemy_Building_Scan(const TypeList<BuildingTypeClass*>& list, int threatvalue) const;
+    bool AdvAI_Enemy_Has_Vulnerable_Buildings(const TypeList<BuildingTypeClass*>& list) const;
+    bool AdvAI_Enemy_Has_Lightly_Defended_Buildings(const TypeList<BuildingTypeClass*>& list) const;
+    bool Has_One_Of(const TypeList<BuildingTypeClass*>& buildingtypes) const;
+    bool Has_Barracks() const;
+    bool Has_War_Factory() const;
+    bool Has_Naval_Yard() const;
+    bool Has_Helipad() const;
+    bool Has_Construction_Yard() const;
+    int Get_Building_Capture_Attempt_Index_For(const BuildingClass* building) const;
+    bool Is_Valid_Building_For_Capturing(BuildingClass* building, const Cell& zonecell, bool& okintheory) const;
+    void Add_Building_Capture_Attempt(const BuildingClass* building);
+
+private:
+    void AdvAI_Calculate_Enemy_Strength();
+    void AdvAI_Commence_Current_Tactic();
+    void AdvAI_Air_Tactic_AI();
+    void AdvAI_Naval_Tactic_AI();
+    void AdvAI_Tactic_Selection_AI();
+    void AdvAI_Team_Recruitment_AI();
+    void AdvAI_Team_Maintenance_AI();
+    void AdvAI_Self_Defense_AI();
+    void AdvAI_Check_Naval_Only();
+    void AdvAI_Check_For_Engineer_Capturing_Neutral_Building();
+    bool AdvAI_Is_Under_Start_Rush_Threat() const;
+    int AdvAI_Start_Rush_Counter(RTTIType rtti);
+    bool AdvAI_Select_Air_Defense_Unit(RTTIType rtti);
+    int AdvAI_Harvester_Shortfall(const UnitTypeClass* harvester) const;
 
 public:
     bool Has_Prerequisite(int prerequisite);
@@ -257,4 +404,47 @@ public:
      *  Is this house an observer?
      */
     bool IsObserver;
+
+    /**
+     *  AF-0009U: Advanced AI unit production and tactic state (ported from DTA).
+     *  All fields are plain data, saved with the extension and only changed by
+     *  the synchronised simulation.
+     */
+    bool IsUnderStartRushThreat;
+    bool HasPerformedVehicleCharge;
+    int NextOilRefineryCaptureCheckFrame;
+    int NextEngineerCheckFrame;
+    AdvAITacticInfo<AdvAITacticType> AdvAIGroundTactic;
+    int AdvAIGroundTacticPostponements;
+    AdvAITacticInfo<AdvAIAirTacticType> AdvAIAirTactic;
+    AdvAITacticInfo<AdvAINavalTacticType> AdvAINavalTactic;
+    int AdvAILastExecutionFrameForTactic[TACTIC_COUNT];
+    int AdvAILastTacticExecutionFrame;
+    int EnemyNoneStrength;
+    int EnemyLightStrength;
+    int EnemyHeavyStrength;
+    int EnemyArtilleryStrength;
+    int EnemyBaseDefenseStrength;
+    int EnemyNavalStrength;
+    int EnemyAirStrength;   // Aftermath: cost of flying enemies (aircraft and airborne jumpjets).
+    EnemyStrengthStruct EnemyAntiGroundStrength;
+    EnemyStrengthStruct EnemyAntiAirStrength;
+    EnemyStrengthStruct EnemyAntiNavalStrength;
+    int EnemyHarvesterCount;
+    int EnemyRefineryCount;
+    bool EnemyHasSensors;
+    int LastHarvesterBuildFrame;
+    int LastUnitValueDebugPrintFrame;
+    int LastInfantryValueDebugPrintFrame;
+    int LastAircraftValueDebugPrintFrame;
+    int LastNavalValueDebugPrintFrame;
+    AttemptedBuildingCaptureStruct AttemptedBuildingCaptures[50];
+    int AttemptedBuildingCaptureCount;
+    UnitType AdvAILastBuiltUnit;
+    int AdvAILastBuiltUnitCount;
+    InfantryType AdvAILastBuiltInfantry;
+    int AdvAILastBuiltInfantryCount;
+    int FactionSpecificTacticalValues[ADVAI_TACTICAL_VALUE_COUNT];
+    AdvancedAINavalOnlyState IsNavalOnly;
+    int LastNavalOnlyCheckFrame;
 };

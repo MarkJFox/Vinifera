@@ -30,6 +30,7 @@
 #include "loadoptions.h"
 #include "prerequisitegroup.h"
 #include "rockettype.h"
+#include "advaitactictype.h"
 #include "spawner.h"
 #include "spawnmanager.h"
 #include "syringe.h"
@@ -77,6 +78,13 @@ static void _Free_Heaps_Intercept()
         delete RocketTypes[0];
     }
     Delete_Marked();
+
+    /**
+     *  AF-0009U: Advanced AI tactic types only reference rules data.
+     */
+    while (AdvancedAITacticTypes.Count()) {
+        delete AdvancedAITacticTypes[0];
+    }
 
     //while (SpawnManagers.Count()) { // spawn managers are destroyed by their owners
     //    delete SpawnManagers[0];

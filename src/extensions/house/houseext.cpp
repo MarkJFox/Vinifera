@@ -40,6 +40,7 @@
 #include "vox.h"
 
 #include <algorithm>
+#include <climits>
 
 
 /**
@@ -58,12 +59,56 @@ HouseClassExtension::HouseClassExtension(const HouseClass *this_ptr) :
     SpawnWaypoint(WAYPOINT_NONE),
     IronCurtainAvailabilityTimer(),
     IsPauseRepairs(false),
-    IsObserver(false)
+    IsObserver(false),
+    IsUnderStartRushThreat(false),
+    HasPerformedVehicleCharge(false),
+    NextOilRefineryCaptureCheckFrame(0),
+    NextEngineerCheckFrame(0),
+    AdvAIGroundTactic(TACTIC_NONE, 0, 0),
+    AdvAIGroundTacticPostponements(0),
+    AdvAIAirTactic(AIRTACTIC_NONE, 0, 0),
+    AdvAINavalTactic(NAVALTACTIC_NONE, 0, 0),
+    AdvAILastTacticExecutionFrame(0),
+    EnemyNoneStrength(0),
+    EnemyLightStrength(0),
+    EnemyHeavyStrength(0),
+    EnemyArtilleryStrength(0),
+    EnemyBaseDefenseStrength(0),
+    EnemyNavalStrength(0),
+    EnemyAirStrength(0),
+    EnemyAntiGroundStrength{0, 0, 0},
+    EnemyAntiAirStrength{0, 0, 0},
+    EnemyAntiNavalStrength{0, 0, 0},
+    EnemyHarvesterCount(0),
+    EnemyRefineryCount(0),
+    EnemyHasSensors(false),
+    LastHarvesterBuildFrame(INT_MIN / 2),
+    LastUnitValueDebugPrintFrame(INT_MIN / 2),
+    LastInfantryValueDebugPrintFrame(INT_MIN / 2),
+    LastAircraftValueDebugPrintFrame(INT_MIN / 2),
+    LastNavalValueDebugPrintFrame(INT_MIN / 2),
+    AttemptedBuildingCaptures{},
+    AttemptedBuildingCaptureCount(0),
+    AdvAILastBuiltUnit(UNIT_NONE),
+    AdvAILastBuiltUnitCount(0),
+    AdvAILastBuiltInfantry(INFANTRY_NONE),
+    AdvAILastBuiltInfantryCount(0),
+    FactionSpecificTacticalValues{},
+    IsNavalOnly(AdvancedAINavalOnlyState::NOT_CHECKED),
+    LastNavalOnlyCheckFrame(INT_MIN / 2)
 {
     for (int i = 0; i < Tiberiums.Count(); i++)
     {
         TiberiumStorage[i] = 0;
         WeedStorage[i] = 0;
+    }
+
+    /**
+     *  AF-0009U: No tactic has been executed yet.
+     */
+    for (int i = 0; i < TACTIC_COUNT; i++)
+    {
+        AdvAILastExecutionFrameForTactic[i] = INT_MIN / 2;
     }
 
     if (this_ptr)
@@ -205,6 +250,13 @@ void HouseClassExtension::Object_CRC(CRCEngine& crc) const
     crc(SpawnWaypoint);
     crc(IronCurtainAvailabilityTimer);
     crc(IsPauseRepairs);
+    crc(AdvAIGroundTactic.Tactic);
+    crc(AdvAIGroundTactic.SelectionFrame);
+    crc(AdvAIGroundTacticPostponements);
+    crc(AdvAIAirTactic.Tactic);
+    crc(AdvAINavalTactic.Tactic);
+    crc(AdvAILastTacticExecutionFrame);
+    crc(IsUnderStartRushThreat);
 }
 
 
@@ -837,9 +889,26 @@ TechnoTypeClass const* HouseClassExtension::Suggest_New_Object(RTTIType objectty
  */
 int HouseClassExtension::AI_Unit()
 {
-    if (This()->BuildUnit != UNIT_NONE) return TICKS_PER_SECOND;
+    /**
+     *  AF-0009U: Tactic based Advanced AI production (skirmish and multiplayer).
+     */
+    if (Is_Advanced_AI_Unit_Production()) {
+        return AdvAI_AI_Unit();
+    }
+
+    const bool has_order = This()->BuildUnit != UNIT_NONE;
+    if (has_order && (!Is_Advanced_AI_Enabled() || IsObserver)) return TICKS_PER_SECOND;
 
     UnitTypeClass const* harvester = This()->Get_First_ActLike(Rule->HarvesterUnit);
+    // A deferred military request must not prevent the native selector from
+    // requesting the first replacement harvester. Leave live products alone.
+    if (has_order) {
+        const auto* current = This()->BuildUnit >= UNIT_FIRST && This()->BuildUnit < UnitTypes.Count()
+            ? UnitTypes[This()->BuildUnit] : nullptr;
+        if (!harvester || current == harvester || (current && Needs_Advanced_AI_Recovery_Unit(current)) ||
+            !Needs_Advanced_AI_Recovery_Unit(harvester) ||
+            !harvester->Who_Can_Build_Me(true, true, true, This())) return TICKS_PER_SECOND;
+    }
     if (harvester == nullptr) {
         Vinifera_Log_And_Show_WWMessageBox("House %s has no valid harvester unit defined.", This()->Class->IniName.c_str());
         ASSERT_FATAL_PRINT(harvester != nullptr, "House %s has no valid harvester unit defined.", This()->Class->IniName);
@@ -869,6 +938,7 @@ int HouseClassExtension::AI_Unit()
             return TICKS_PER_SECOND;
         }
     }
+    if (has_order) return TICKS_PER_SECOND;
 
     int counter[1000]; // size increased replicating ts-patches
     int value[std::size(counter)];
@@ -958,6 +1028,13 @@ int HouseClassExtension::AI_Unit()
 int HouseClassExtension::AI_Naval_Unit()
 {
     if (BuildNavalUnit != UNIT_NONE) return TICKS_PER_SECOND;
+
+    /**
+     *  AF-0009U: Tactic based Advanced AI production (skirmish and multiplayer).
+     */
+    if (Is_Advanced_AI_Unit_Production()) {
+        return AdvAI_AI_Naval_Unit();
+    }
 
     int counter[1000]; // size increased replicating ts-patches
     int value[std::size(counter)];

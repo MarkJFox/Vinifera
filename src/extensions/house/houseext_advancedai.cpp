@@ -45,6 +45,7 @@
 #include "side.h"
 #include "sideext.h"
 #include "team.h"
+#include "teamext.h"
 #include "teamtype.h"
 #include "technoext.h"
 #include "technotypeext.h"
@@ -77,6 +78,8 @@ namespace
     std::set<std::tuple<int, int, std::string>> AdvancedAIPowerSelections;
     // Per candidate: -2 = affordable, -1 = no plant, otherwise the selected type.
     std::map<std::pair<int, int>, int> AdvancedAIPowerDiagnostics;
+    // AF-0009U: Above zero while defense candidates are only rated, not ordered.
+    int PowerTraceMute = 0;
     using ProductionTraceKey = std::tuple<int, std::string_view, int>;
     struct ProductionTraceState
     {
@@ -97,6 +100,7 @@ namespace
         bool operator==(const ProductionTraceState&) const = default;
     };
     std::map<ProductionTraceKey, ProductionTraceState> ProductionTraces;
+    std::map<std::tuple<int, RTTIType, int>, std::tuple<std::string_view, std::string_view, std::string_view>> UnitStartTraces;
 
     struct BuildingStartState
     {
@@ -120,13 +124,36 @@ namespace
     {
         std::map<int, StructType> Owned;
         std::map<StructType, int> ReplaceTo;
+        // AF-0009U: Failed placements of a pending replacement (type -> count).
+        std::map<StructType, int> PlacementFailures;
     };
     std::map<int, BuildingLossState> BuildingLosses;
+    /**
+     *  AF-0009U: A replacement that could not be placed this often is dropped.
+     *  Nod built, rejected and abandoned the same laser and SAM replacements
+     *  160 times (log 19.11.2026 19-57-29), every 30 s after the site deferral.
+     */
+    constexpr int ReplacementPlacementLimit = 2;
+    // AF-0009U: Frames at which defense structures of a type were lost (house, type).
+    std::map<std::pair<int, int>, std::vector<long>> DefenseLosses;
+    constexpr long DefenseLossWindow = 120 * TICKS_PER_SECOND;
+    constexpr int DefenseLossLimit = 2;
+
+    int Recent_Defense_Losses(int house_id, int type)
+    {
+        const auto found = DefenseLosses.find({house_id, type});
+        if (found == DefenseLosses.end()) return 0;
+        return static_cast<int>(std::count_if(found->second.begin(), found->second.end(), [](long frame) {
+            return Frame >= frame && Frame - frame <= DefenseLossWindow;
+        }));
+    }
     struct BuildingAttack
     {
         Cell Target;
         long LastHit;
         int Damage;
+        // AF-0009U: Last hit on a real base building near the base center.
+        long LastBaseHit = -1;
     };
     std::map<int, std::map<int, BuildingAttack>> BuildingAttacks;
     std::map<int, std::tuple<int, StructType, int, bool, bool>> DefenseResponseTraces;
@@ -279,6 +306,38 @@ namespace
         return false;
     }
 
+    bool Team_Needs_Members(const TeamClass* team, const HouseClass* house)
+    {
+        return team && team->House == house && team->Class && team->Class->TaskForce &&
+            ((team->Class->IsReinforcable && !team->IsFullStrength) || (!team->IsForcedActive && !team->IsHasBeen));
+    }
+
+    bool Has_Unfilled_Team_Demand(HouseClass* house, const TechnoTypeClass* type, int pending)
+    {
+        int missing = 0;
+        DynamicVectorClass<const TechnoTypeClass*> members;
+        for (TeamClass* team : Teams) {
+            if (!Team_Needs_Members(team, house)) continue;
+            members.Reset_Active();
+            team->Team_Members(members);
+            for (const auto* member : members) missing += member == type;
+        }
+        if (missing <= pending) return false;
+
+        const auto needs_more = [&](const auto& units) {
+            for (const auto* unit : units) {
+                if (unit && unit->TClass == type && unit->Is_Recruitable(house) && --missing <= pending) return false;
+            }
+            return true;
+        };
+        switch (type->RTTI) {
+        case RTTI_INFANTRYTYPE: return needs_more(Infantry);
+        case RTTI_UNITTYPE: return needs_more(Units);
+        case RTTI_AIRCRAFTTYPE: return needs_more(Aircrafts);
+        default: return false;
+        }
+    }
+
     enum class DefenseRole { Air, Infantry, Armor };
     constexpr std::array DefenseRoles{DefenseRole::Air, DefenseRole::Infantry, DefenseRole::Armor};
 
@@ -330,11 +389,17 @@ namespace
         if (history == BuildingAttacks.end()) return threats;
         std::erase_if(history->second, [](const auto& entry) { return Attack_Expired(entry.second); });
         if (history->second.empty()) return threats;
-        const auto count_attackers = [&](const auto& objects, DefenseRole role) {
-            auto& threat = threats[static_cast<size_t>(role)];
-            std::optional<std::pair<long, int>> best_focus;
+        std::array<std::optional<std::pair<long, int>>, DefenseRoles.size()> best_focuses{};
+        const auto count_attackers = [&](const auto& objects, DefenseRole list_role) {
             for (const TechnoClass* attacker : objects) {
                 if (!Hostile_To(house, attacker)) continue;
+                /**
+                 *  AF-0009U: A flying attacker (for example a jumpjet infantry or vehicle)
+                 *  is an air threat; only anti-aircraft defenses can respond to it.
+                 */
+                const DefenseRole role = attacker->In_Air() ? DefenseRole::Air : list_role;
+                auto& threat = threats[static_cast<size_t>(role)];
+                auto& best_focus = best_focuses[static_cast<size_t>(role)];
                 const auto found = history->second.find(attacker->ID);
                 if (found == history->second.end()) continue;
                 const Cell position = attacker->Get_Cell();
@@ -358,6 +423,25 @@ namespace
         count_attackers(Units, DefenseRole::Armor);
         return threats;
     }
+
+    /**
+     *  AF-0009U: Building damage the attacker dealt to this house within the last minute.
+     */
+    long long Recent_Attacker_Damage(const HouseClass* house, int attacker_id)
+    {
+        const auto history = BuildingAttacks.find(static_cast<int>(house->HeapID));
+        if (history == BuildingAttacks.end()) return 0;
+        const auto found = history->second.find(attacker_id);
+        if (found == history->second.end() || Attack_Expired(found->second)) return 0;
+        return found->second.Damage;
+    }
+
+    /**
+     *  AF-0009U: A single strong attacker (for example a hero unit) is weighed by
+     *  the damage it already dealt, not only by the size of its group.
+     */
+    constexpr long long Significant_Attacker_Damage = 400;
+    constexpr long long Urgent_Attacker_Damage = 1000;
 
     constexpr int Preventive_Scan_Interval = TICKS_PER_SECOND;
     constexpr int Preventive_Maximum_Distance = 16;
@@ -399,6 +483,24 @@ namespace
     };
 
     std::map<int, PreventiveDefenseState> PreventiveDefenses;
+
+    /**
+     *  AF-0009U: Savings goal published by the building planner when it waits
+     *  for credits. Unit starts leave this amount untouched so that the base
+     *  can grow. Derived from the simulation and refreshed by the planner.
+     */
+    struct SavingsGoalState
+    {
+        long long Amount = 0;
+        int Frame = 0;
+        const char* Reason = "none";
+        bool Economy = false;
+        int Since = 0;      // First frame of the current continuous savings period.
+    };
+    std::map<int, SavingsGoalState> SavingsGoals;
+    // The planner refreshes goals at least every ~30 s; two minutes bridge slow probes.
+    constexpr int SavingsGoalLifetime = 2 * TICKS_PER_MINUTE;
+    std::map<std::pair<int, int>, std::string_view> SavingsTraces;
     std::map<int, std::tuple<std::string_view, int, int, int, int>> PreventiveDefenseTraces;
     std::map<std::pair<int, StructType>, long> ThreatDefensePlacementFailures;
 
@@ -666,6 +768,7 @@ namespace
 #ifdef NDEBUG
         if (!Vinifera_DeveloperMode) return;
 #endif
+        if (PowerTraceMute > 0) return;
         const auto key = std::make_pair(static_cast<int>(house->HeapID), static_cast<int>(desired->HeapID));
         const int state = !deficit ? -2 : plant ? static_cast<int>(plant->HeapID) : -1;
         const auto previous = AdvancedAIPowerDiagnostics.find(key);
@@ -712,22 +815,27 @@ void HouseClassExtension::Clear_Advanced_AI_Building_Order_State()
 {
     BuildingStarts.clear();
     BuildingLosses.clear();
+    DefenseLosses.clear();
     BuildingAttacks.clear();
     PreventiveDefenses.clear();
+    SavingsGoals.clear();
+    SavingsTraces.clear();
     PreventiveDefenseTraces.clear();
     ThreatDefensePlacementFailures.clear();
     FailedBuildingSites.clear();
     BuildingOrderTraces.clear();
     TechnologyTraces.clear();
+    UnitStartTraces.clear();
 }
 
-void HouseClassExtension::Record_Advanced_AI_Building_Hit(int attacker_id, const Cell& target, int damage)
+void HouseClassExtension::Record_Advanced_AI_Building_Hit(int attacker_id, const Cell& target, int damage, bool base_hit)
 {
     auto& history = BuildingAttacks[static_cast<int>(This_Const()->HeapID)];
     auto& hit = history.try_emplace(attacker_id, BuildingAttack{target, Frame, 0}).first->second;
     if (Attack_Expired(hit)) hit = {target, Frame, 0};
     hit.Target = target;
     hit.LastHit = Frame;
+    if (base_hit) hit.LastBaseHit = Frame;
     hit.Damage = static_cast<int>(std::min(1000000LL, static_cast<long long>(hit.Damage) + damage));
 }
 
@@ -746,6 +854,57 @@ Cell HouseClassExtension::Advanced_AI_Defense_Focus(const BuildingTypeClass* typ
     }
     return target;
 }
+
+/**
+ *  AF-0009U: The hostile unit that dealt the most building damage to this house
+ *  recently and is still active near its target. Used to send units against it.
+ */
+TechnoClass* HouseClassExtension::Advanced_AI_Primary_Base_Attacker(long long& damage) const
+{
+    damage = 0;
+    const HouseClass* house = This_Const();
+    const auto history = BuildingAttacks.find(static_cast<int>(house->HeapID));
+    if (history == BuildingAttacks.end() || history->second.empty()) return nullptr;
+
+    TechnoClass* best = nullptr;
+    for (TechnoClass* techno : Technos) {
+        if (techno->RTTI == RTTI_BUILDING || !Hostile_To(house, techno)) continue;
+        const auto found = history->second.find(techno->ID);
+        if (found == history->second.end()) continue;
+        const auto& hit = found->second;
+        if (Attack_Expired(hit) || Frame - hit.LastHit > Active_Defense_Hit_Window) continue;
+        if (techno->Get_Cell().Relative_Distance_To(hit.Target) > 20 * 20) continue;
+        if (!best || hit.Damage > damage) {
+            best = techno;
+            damage = hit.Damage;
+        }
+    }
+    return best;
+}
+
+
+/**
+ *  Credits that must remain after starting the given defense. Threat responses
+ *  use the same urgency rule as the planner, so an emergency defense is not
+ *  selected and then rejected again at the factory.
+ */
+long long HouseClassExtension::Advanced_AI_Defense_Start_Reserve(const BuildingTypeClass* type) const
+{
+    const int id = static_cast<int>(This_Const()->HeapID);
+    bool urgent = false;
+
+    const auto start = BuildingStarts.find(id);
+    if (start != BuildingStarts.end() && start->second.ThreatDefenseOrder && start->second.SelectedType == type->HeapID) {
+        urgent = start->second.EmergencyDefenseOrder;
+        const auto defense = PreventiveDefenses.find(id);
+        if (defense != PreventiveDefenses.end() && defense->second.Planned == type) {
+            urgent |= defense->second.Focus.Urgent;
+        }
+    }
+
+    return Threat_Defense_Reserve(Advanced_AI_Uncommitted_Funds(), Advanced_AI_Refinery_Reserve(), urgent);
+}
+
 
 bool HouseClassExtension::Advanced_AI_Ordered_Defense_Focus(const BuildingTypeClass* type,
     AdvancedAIDefenseFocus& focus) const
@@ -1006,6 +1165,16 @@ void HouseClassExtension::Defer_Advanced_AI_Building_Type(const BuildingTypeClas
     const auto failed = ThreatDefensePlacementFailures.find(key);
     if (failed != ThreatDefensePlacementFailures.end() && failed->second == Frame) return;
     FailedBuildingSites.insert_or_assign(key, Frame);
+
+    // AF-0009U: Drop a replacement that keeps failing; a later loss adds it again.
+    auto& state = BuildingLosses[key.first];
+    if (!state.ReplaceTo.count(type->HeapID)) return;
+    const int failures = ++state.PlacementFailures[type->HeapID];
+    if (failures < ReplacementPlacementLimit) return;
+    state.ReplaceTo.erase(type->HeapID);
+    state.PlacementFailures.erase(type->HeapID);
+    DEV_DEBUG_INFO("AF-0009U: house={} frame={} replacement-dropped type={} placement-failures={}\n",
+        key.first, Frame, type->Name(), failures);
 }
 
 bool HouseClassExtension::Is_Advanced_AI_Building_Type_Deferred(const BuildingTypeClass* type) const
@@ -1046,6 +1215,8 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Replacement(boo
         if (!Usable_Owned_Building(building, house) || !Valid_Building_Type(building->Class)) continue;
         const auto* type = building->Class;
         if (type->IsWall || type->IsGate || type->IsInvisibleInGame) continue;
+        // AF-0009U: Deployed vehicles (artillery, tick tanks) are units, not losses to rebuild.
+        if (type->UndeploysInto != nullptr && !type->IsConstructionYard) continue;
         owned.emplace(building->ID, type->HeapID);
         ++counts[type->HeapID];
     }
@@ -1058,10 +1229,21 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Replacement(boo
         if (!selling.count(id) && !owned.count(id) && counts[type] < previous_counts[type]) {
             auto& goal = state.ReplaceTo[type];
             goal = std::max(goal, previous_counts[type]);
+            const auto* lost = Building_Order_Type(type);
+            if (lost && Is_Advanced_AI_Defense_Type(lost)) {
+                auto& frames = DefenseLosses[{static_cast<int>(house->HeapID), static_cast<int>(type)}];
+                std::erase_if(frames, [](long frame) { return Frame < frame || Frame - frame > DefenseLossWindow; });
+                frames.push_back(Frame);
+            }
         }
     }
     state.Owned.swap(owned);
-    std::erase_if(state.ReplaceTo, [&](const auto& entry) { return counts[entry.first] >= entry.second; });
+    std::erase_if(state.ReplaceTo, [&](const auto& entry) {
+        const auto* type = Building_Order_Type(entry.first);
+        return counts[entry.first] >= entry.second || (type && type->UndeploysInto != nullptr && !type->IsConstructionYard);
+    });
+    // A finished or dropped replacement starts a later loss with a fresh count.
+    std::erase_if(state.PlacementFailures, [&](const auto& entry) { return !state.ReplaceTo.count(entry.first); });
     if (!slot_free || state.ReplaceTo.empty()) return nullptr;
 
     const long long funds = Advanced_AI_Uncommitted_Funds();
@@ -1080,9 +1262,55 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Replacement(boo
         return std::make_tuple(priority, type->HeapID);
     };
     std::sort(candidates.begin(), candidates.end(), [&](const auto* a, const auto* b) { return rank(a) < rank(b); });
+
+    /**
+     *  AF-0009U: While the base is still being hit, a rebuilt building is usually
+     *  destroyed again by the same attacker. Defer replacements (except a
+     *  construction yard) until the base was not hit for a short while, so the
+     *  credits go to the threat defense instead. A power deficit is still
+     *  handled separately by the "restore-power" path.
+     */
+    static constexpr int ReplacementQuietFrames = 10 * TICKS_PER_SECOND;
+    bool under_fire = false;
+    if (const auto attacks = BuildingAttacks.find(static_cast<int>(house->HeapID)); attacks != BuildingAttacks.end()) {
+        for (const auto& [attacker, hit] : attacks->second) {
+            if (hit.LastBaseHit >= 0 && Frame >= hit.LastBaseHit && Frame - hit.LastBaseHit <= ReplacementQuietFrames) {
+                under_fire = true;
+                break;
+            }
+        }
+    }
+
+    bool traced_deferral = false;
+    bool traced_power_surplus = false;
     for (const auto* type : candidates) {
+        if (under_fire && !type->IsConstructionYard) {
+            // One trace per pass: alternating types would defeat the trace deduplication.
+            if (!traced_deferral) Trace_Advanced_AI_Building_Order("replacement", "deferred-under-fire", type);
+            traced_deferral = true;
+            continue;
+        }
         if (!Has_Advanced_AI_Refineries_For(type) || Is_Advanced_AI_Building_Type_Deferred(type) ||
             !Can_Advanced_AI_Build_Building(type, nullptr, false)) continue;
+        // AF-0009U: A defense lost repeatedly is not rebuilt 1:1; the threat defense picks a stronger type.
+        if (Is_Advanced_AI_Defense_Type(type) &&
+            Recent_Defense_Losses(static_cast<int>(house->HeapID), type->HeapID) >= DefenseLossLimit) continue;
+        /**
+         *  AF-0009U: A lost power plant is only rebuilt while the remaining
+         *  surplus is smaller than its own output. With enough power left the
+         *  credits go elsewhere; a later deficit is covered by "restore-power"
+         *  or by this goal, which stays open.
+         */
+        if (Matches_Role(type, InfrastructureRole::Power)) {
+            const long long available = static_cast<long long>(house->Power) - house->Drain - house->PowerSurplus;
+            const long long output = static_cast<long long>(type->Power) - type->Drain;
+            if (available >= output) {
+                // One trace per pass, like the deferral above.
+                if (!traced_power_surplus) Trace_Advanced_AI_Building_Order("replacement", "power-surplus-sufficient", type);
+                traced_power_surplus = true;
+                continue;
+            }
+        }
         const auto* order = Prioritize_Advanced_AI_Power(type);
         if (!order) continue;
         const int cost = type->Cost_Of(house);
@@ -1305,6 +1533,14 @@ AdvancedAIBuildingPlan HouseClassExtension::Plan_Advanced_AI_Building()
             return {Action::Order, "preventive-base-defense", defense, "B1", goal};
         }
     }
+    if (const auto* prerequisite = Select_Advanced_AI_Air_Defense_Prerequisite()) {
+        Plan_Advanced_AI_Expansion(prerequisite);
+        return {Action::Order, "air-defense-prerequisite", prerequisite, "B1"};
+    }
+    if (const auto* dock = Select_Advanced_AI_Aircraft_Dock()) {
+        Plan_Advanced_AI_Expansion(dock);
+        return {Action::Order, "missing-aircraft-dock", dock, "B1"};
+    }
     if (replacement) {
         Plan_Advanced_AI_Expansion(replacement);
         return {Action::Order, "replace-lost-building", replacement, "B1", replacement_goal};
@@ -1333,9 +1569,21 @@ AdvancedAIBuildingPlan HouseClassExtension::Plan_Advanced_AI_Building()
     if (const auto* defense = Select_Advanced_AI_Preventive_Defense(goal)) {
         return {Action::Order, "preventive-base-defense", defense, "B1", goal};
     }
+    /**
+     *  AF-0009U: Base creep towards a field without a verified refinery site
+     *  (see Select_Advanced_AI_Expansion_Creep). The refinery step comes before
+     *  the B2 development, the power steps only when B2 has nothing to do.
+     */
+    const char* creep_reason = nullptr;
+    if (const auto* creep = Select_Advanced_AI_Expansion_Creep(true, creep_reason)) {
+        return {Action::Order, creep_reason, creep, "B1"};
+    }
     const char* development_reason = nullptr;
     if (const auto* choice = Plan_Advanced_AI_Development(development_reason, goal)) {
         return {Action::Order, development_reason, choice, "B2", goal};
+    }
+    if (const auto* creep = Select_Advanced_AI_Expansion_Creep(false, creep_reason)) {
+        return {Action::Order, creep_reason, creep, "B2"};
     }
     return {Action::Wait, development_reason, nullptr, "B2"};
 }
@@ -1690,6 +1938,284 @@ int HouseClassExtension::Advanced_AI_Refinery_Shortfall(bool preferred) const
     return std::max(0, target - refineries);
 }
 
+/**
+ *  AF-0009U: When flying enemies threaten the base but no anti-aircraft defense
+ *  can be built yet (for example the SAM site needs a radar), order the missing
+ *  prerequisite. Without it the base stayed defenseless against jumpjets.
+ */
+const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Air_Defense_Prerequisite()
+{
+    static constexpr int AirThreatRadius = 25 * CELL_LEPTON_W;
+
+    HouseClass* house = This();
+
+    /**
+     *  Is there a hostile flying unit attacking or near the base?
+     */
+    const auto threats = Active_Building_Threats(house);
+    bool air_threat = threats[static_cast<size_t>(DefenseRole::Air)].Attackers > 0;
+    if (!air_threat && house->Center != COORD_NONE) {
+        for (const TechnoClass* techno : Technos) {
+            if (techno->RTTI == RTTI_BUILDING || !Hostile_To(house, techno) || !techno->In_Air()) continue;
+            if (techno->Center_Coord().Distance_To(house->Center) <= AirThreatRadius) {
+                air_threat = true;
+                break;
+            }
+        }
+    }
+    if (!air_threat) return nullptr;
+
+    /**
+     *  Nothing to do if an anti-aircraft defense exists or can already be built.
+     */
+    for (const BuildingClass* building : Buildings) {
+        if (Usable_Owned_Building(building, house) && Is_Advanced_AI_Defense_Type(building->Class) &&
+            Defense_Range(building->Class, DefenseRole::Air) > 0) return nullptr;
+    }
+    for (const BuildingTypeClass* type : BuildingTypes) {
+        if (Valid_Building_Type(type) && Is_Advanced_AI_Defense_Type(type) && Defense_Range(type, DefenseRole::Air) > 0 &&
+            Can_Advanced_AI_Build_Type(type, false)) return nullptr;
+    }
+
+    /**
+     *  Find a missing prerequisite of an anti-aircraft defense this house could own.
+     */
+    for (const BuildingTypeClass* defense : BuildingTypes) {
+        if (!Valid_Building_Type(defense) || !Is_Advanced_AI_Defense_Type(defense) || Defense_Range(defense, DefenseRole::Air) <= 0 ||
+            !Can_Advanced_AI_Build_Type(defense, false, false)) continue;
+
+        for (const int requirement : defense->Prerequisite) {
+            if (Has_Prerequisite(requirement)) continue;
+
+            const BuildingTypeClass* candidate = nullptr;
+            if (requirement >= STRUCT_FIRST) {
+                candidate = requirement < BuildingTypes.Count() ? BuildingTypes[requirement] : nullptr;
+            } else {
+                const auto group = PrerequisiteGroupClass::Decode(requirement);
+                if (group < PREREQ_GROUP_FIRST || group >= PrerequisiteGroups.Count() || !PrerequisiteGroups[group]) continue;
+                for (const auto member : PrerequisiteGroups[group]->Prerequisites) {
+                    if (member >= STRUCT_FIRST && member < BuildingTypes.Count() &&
+                        Can_Advanced_AI_Build_Building(BuildingTypes[member], nullptr, false)) {
+                        candidate = BuildingTypes[member];
+                        break;
+                    }
+                }
+            }
+
+            if (candidate == nullptr || Is_Advanced_AI_Building_Type_Deferred(candidate) ||
+                !Can_Advanced_AI_Build_Building(candidate, nullptr, false)) continue;
+
+            const int cost = candidate->Cost_Of(house);
+            if (cost < 0) continue;
+
+            if (Advanced_AI_Uncommitted_Funds() < cost) {
+                // Keep the credits for it; units and optional buildings wait.
+                Request_Advanced_AI_Savings(cost, "air-defense-prerequisite", true);
+                return nullptr;
+            }
+
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} air-defense-prerequisite={} for={}\n",
+                static_cast<int>(house->HeapID), Frame, candidate->Name(), defense->Name());
+            return Prioritize_Advanced_AI_Power(candidate);
+        }
+    }
+
+    return nullptr;
+}
+
+
+/**
+ *  Aftermath: Does this aircraft type need a fixed dock? Every armed aircraft
+ *  that lists docks does (it rearms there); transports and other unarmed
+ *  aircraft may exist without one.
+ */
+bool HouseClassExtension::Advanced_AI_Aircraft_Needs_Dock(const AircraftTypeClass* type)
+{
+    return type != nullptr && !type->IsCarryall && type->Dock.Count() > 0 &&
+        type->Fetch_Weapon_Info(WEAPON_SLOT_PRIMARY).Weapon != nullptr;
+}
+
+
+/**
+ *  Aftermath: Dock balance for aircraft of the given type. 'docks' counts the
+ *  owned docks the type can use (an aircraft MultiDock building counts its
+ *  AircraftDockCount). 'aircraft' counts the owned armed aircraft (flying,
+ *  landed or in production) that use any of these dock types.
+ */
+void HouseClassExtension::Advanced_AI_Aircraft_Dock_Balance(const AircraftTypeClass* type, int& aircraft, int& docks) const
+{
+    aircraft = 0;
+    docks = 0;
+    if (!Advanced_AI_Aircraft_Needs_Dock(type)) return;
+
+    const HouseClass* house = This_Const();
+
+    for (const BuildingClass* building : Buildings) {
+        if (!Usable_Owned_Building(building, house) || !type->Dock.Is_Present(building->Class)) continue;
+        const auto* typeext = Extension::Fetch(building->Class);
+        docks += typeext->Is_Aircraft_MultiDock() ? typeext->AircraftDockCount : 1;
+    }
+
+    const auto shares_dock = [type](const AircraftTypeClass* other) {
+        if (!Advanced_AI_Aircraft_Needs_Dock(other)) return false;
+        for (const BuildingTypeClass* dock : other->Dock) {
+            if (type->Dock.Is_Present(const_cast<BuildingTypeClass*>(dock))) return true;
+        }
+        return false;
+    };
+
+    for (const AircraftClass* unit : Aircrafts) {
+        if (unit == nullptr || unit->House != house || !unit->IsActive || unit->Strength <= 0 || unit->IsInLimbo) continue;
+        if (shares_dock(unit->Class)) aircraft++;
+    }
+
+    for (const FactoryClass* factory : Factories) {
+        if (factory == nullptr || factory->House != house) continue;
+        const TechnoClass* product = factory->Get_Object();
+        if (product != nullptr && product->RTTI == RTTI_AIRCRAFT && shares_dock(static_cast<const AircraftClass*>(product)->Class)) {
+            aircraft++;
+        }
+    }
+}
+
+
+/**
+ *  AF-0009U: Limits checked again when a factory takes over a house build
+ *  request. The selectors only check them when choosing the type, and the
+ *  request stays set until delivery, so several free factories could otherwise
+ *  start the same order and exceed the dock capacity or the team budget.
+ */
+const char* HouseClassExtension::Advanced_AI_Unit_Start_Limit(const TechnoTypeClass* type) const
+{
+    if (type == nullptr || !Is_Advanced_AI_Unit_Production()) return nullptr;
+
+    const HouseClass* house = This_Const();
+
+    // Dock capacity: armed aircraft (including those in production) need a dock each.
+    if (type->RTTI == RTTI_AIRCRAFTTYPE) {
+        const auto* airtype = static_cast<const AircraftTypeClass*>(type);
+        if (Advanced_AI_Aircraft_Needs_Dock(airtype)) {
+            int aircraft = 0;
+            int docks = 0;
+            Advanced_AI_Aircraft_Dock_Balance(airtype, aircraft, docks);
+            if (aircraft >= docks) return "dock-capacity";
+        }
+    }
+
+    // Anti-aircraft units built against an air attack on the base are not team orders.
+    if (Advanced_AI_Can_Hit_Air(type) && Advanced_AI_Air_Attackers() > 0) return nullptr;
+
+    // Harvesters, base rebuilders and engineers for capturing are not team orders.
+    if (type->RTTI == RTTI_UNITTYPE) {
+        const auto* unittype = static_cast<const UnitTypeClass*>(type);
+        if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype) ||
+            (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard)) return nullptr;
+    }
+    if (type->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(type)->IsEngineer) return nullptr;
+
+    // The team that the selector fills with this kind of object.
+    const auto team_for = [this](const TechnoTypeClass* t) -> TeamClass* {
+        const RTTIType rtti = t->RTTI == RTTI_INFANTRYTYPE ? RTTI_INFANTRY :
+            t->RTTI == RTTI_AIRCRAFTTYPE ? RTTI_AIRCRAFT : RTTI_UNIT;
+        const ProductionFlags flags = Extension::Fetch(t)->IsNaval ? PRODFLAG_NAVAL : PRODFLAG_NONE;
+        int id = 0;
+        return Get_Team_In_Production(id, rtti, flags);
+    };
+
+    TeamClass* team = team_for(type);
+    if (team == nullptr) return nullptr; // Rush counter production without a team.
+
+    const TeamClassExtension* teamext = Extension::Fetch(team);
+    if (teamext->MaxCost <= 0) return nullptr;
+
+    // Combat units already in production for the same team count against its budget.
+    long long pending = 0;
+    for (const FactoryClass* factory : Factories) {
+        if (!factory || factory->House != house) continue;
+        const TechnoClass* product = factory->Get_Object();
+        if (!product || !product->IsInLimbo || product->RTTI == RTTI_BUILDING) continue;
+        const TechnoTypeClass* ptype = product->TClass;
+        if (ptype->RTTI == RTTI_UNITTYPE) {
+            const auto* unittype = static_cast<const UnitTypeClass*>(ptype);
+            if (unittype->IsToHarvest || unittype->IsToVeinHarvest ||
+                (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard)) continue;
+        }
+        if (ptype->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(ptype)->IsEngineer) continue;
+        if (team_for(ptype) == team) pending += ptype->Cost;
+    }
+
+    if (teamext->CurrentCost + pending + type->Cost > teamext->AdvAI_Effective_Max_Cost()) return "team-budget";
+    return nullptr;
+}
+
+
+/**
+ *  AF-0009U: Can this type hit flying targets (aircraft, airborne jumpjets)?
+ */
+bool HouseClassExtension::Advanced_AI_Can_Hit_Air(const TechnoTypeClass* type)
+{
+    if (type == nullptr) return false;
+    for (WeaponSlotType slot : { WEAPON_SLOT_PRIMARY, WEAPON_SLOT_SECONDARY }) {
+        const WeaponTypeClass* weapon = type->Fetch_Weapon_Info(slot).Weapon;
+        if (weapon != nullptr && weapon->Bullet != nullptr && weapon->Bullet->IsAntiAircraft) return true;
+    }
+    return false;
+}
+
+
+/**
+ *  AF-0009U: Flying enemies (aircraft, airborne jumpjets) that hit one of our
+ *  buildings within the active defense window.
+ */
+int HouseClassExtension::Advanced_AI_Air_Attackers() const
+{
+    const auto threats = Active_Building_Threats(This_Const());
+    return threats[static_cast<size_t>(DefenseRole::Air)].Attackers;
+}
+
+
+/**
+ *  Aftermath: When armed aircraft outnumber their docks (for example after
+ *  helipads were destroyed), order a missing dock if it can be built and paid.
+ */
+const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Aircraft_Dock()
+{
+    HouseClass* house = This();
+    std::vector<const AircraftTypeClass*> checked;
+
+    for (const AircraftClass* unit : Aircrafts) {
+        if (unit == nullptr || unit->House != house || !unit->IsActive || unit->Strength <= 0) continue;
+        const AircraftTypeClass* type = unit->Class;
+        if (!Advanced_AI_Aircraft_Needs_Dock(type) || std::find(checked.begin(), checked.end(), type) != checked.end()) continue;
+        checked.push_back(type);
+
+        int aircraft = 0;
+        int docks = 0;
+        Advanced_AI_Aircraft_Dock_Balance(type, aircraft, docks);
+        if (aircraft <= docks) continue;
+
+        for (const BuildingTypeClass* dock : type->Dock) {
+            if (!Valid_Building_Type(dock) || Is_Advanced_AI_Building_Type_Deferred(dock) ||
+                !Can_Advanced_AI_Build_Building(dock, nullptr, false)) continue;
+
+            const int cost = dock->Cost_Of(house);
+            if (cost < 0) continue;
+
+            if (Advanced_AI_Uncommitted_Funds() < cost) {
+                Request_Advanced_AI_Savings(cost, "aircraft-dock", false);
+                return nullptr;
+            }
+
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} aircraft-dock={} for={} aircraft={} docks={}\n",
+                static_cast<int>(house->HeapID), Frame, dock->Name(), type->Name(), aircraft, docks);
+            return Prioritize_Advanced_AI_Power(dock);
+        }
+    }
+
+    return nullptr;
+}
+
+
 const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Wall_Prerequisite()
 {
     // If a faction needs its barracks for walls, bring it forward when it
@@ -1733,6 +2259,288 @@ long long HouseClassExtension::Advanced_AI_Uncommitted_Funds() const
         if (factory && factory->House == house && factory->Get_Object()) funds -= std::max(0, factory->Balance);
     }
     return funds;
+}
+
+/**
+ *  AF-0009U: Savings for a resource expansion ("expansion-refinery",
+ *  "expansion-power-and-refinery").
+ */
+static bool Is_Expansion_Savings_Reason(const char* reason)
+{
+    return reason != nullptr && std::string_view(reason).starts_with("expansion");
+}
+
+
+/**
+ *  AF-0009U: The building planner publishes what it is saving for. The goal
+ *  expires unless the planner refreshes it.
+ */
+void HouseClassExtension::Request_Advanced_AI_Savings(long long amount, const char* reason, bool economy) const
+{
+    if (amount <= 0) return;
+
+    // Only save for an expansion whose site has been found (not for a target out of build range).
+    if (Is_Expansion_Savings_Reason(reason) && !Has_Advanced_AI_Expansion_Site()) return;
+
+    const int id = static_cast<int>(This_Const()->HeapID);
+    auto& goal = SavingsGoals[id];
+
+    // Within one planner pass, keep the most important and then the largest request.
+    const bool same_pass = goal.Frame == Frame;
+    if (same_pass && (goal.Economy && !economy || (goal.Economy == economy && goal.Amount >= amount))) return;
+
+    // Track since when the planner continuously saves for the same kind of goal.
+    const bool continuing = goal.Amount > 0 && goal.Economy == economy && Frame >= goal.Frame &&
+        Frame - goal.Frame <= SavingsGoalLifetime;
+    if (!continuing) goal.Since = Frame;
+
+    goal.Amount = amount;
+    goal.Frame = Frame;
+    goal.Reason = reason;
+    goal.Economy = economy;
+}
+
+
+/**
+ *  AF-0009U: Economy phase of the tactic based unit production.
+ *
+ *  Like DTA, all factories normally run and an expansion refinery is paid in
+ *  installments next to the units. As a fallback only: when a resource
+ *  expansion has been waiting for credits for more than two minutes, the house
+ *  has fewer refineries than the planner aims for (2 per weapons factory) and an
+ *  expansion target exists, only one factory at a time may build combat units.
+ *
+ *  Not limited: harvesters and recovery units, a house whose base was attacked
+ *  within the last minute, an outnumbered army, and an early rush threat.
+ */
+bool HouseClassExtension::Is_Advanced_AI_Economy_Phase_Limited(const TechnoTypeClass* type) const
+{
+    if (!Is_Advanced_AI_Unit_Production()) return false;
+
+    if (type->RTTI == RTTI_UNITTYPE) {
+        const auto* unittype = static_cast<const UnitTypeClass*>(type);
+        if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype)) return false;
+    }
+
+    const HouseClass* house = This_Const();
+    if (house->LATime > 0 && house->LATime + TICKS_PER_MINUTE > Frame) return false;
+    if (IsUnderStartRushThreat || AdvAI_Is_Outnumbered()) return false;
+    if (Advanced_AI_Can_Hit_Air(type) && Advanced_AI_Air_Attackers() > 0) return false;
+
+    if (Advanced_AI_Refinery_Shortfall(true) <= 0) return false;
+    if (Advanced_AI_Expansion_Target() == Cell(0, 0) || !Has_Advanced_AI_Expansion_Site()) return false;
+
+    // Fallback only: the expansion has been waiting for credits for over two minutes.
+    static constexpr int EconomyPhaseDelay = 2 * TICKS_PER_MINUTE;
+    const auto goal = SavingsGoals.find(static_cast<int>(house->HeapID));
+    if (goal == SavingsGoals.end() || !goal->second.Economy || goal->second.Amount <= 0 ||
+        Frame < goal->second.Frame || Frame - goal->second.Frame > SavingsGoalLifetime ||
+        Frame - goal->second.Since < EconomyPhaseDelay) return false;
+
+    // Is another factory already building a combat unit?
+    for (const FactoryClass* factory : Factories) {
+        if (!factory || factory->House != house) continue;
+        const TechnoClass* product = factory->Get_Object();
+        if (!product || product->RTTI == RTTI_BUILDING) continue;
+        if (product->RTTI == RTTI_UNIT) {
+            const auto* unittype = static_cast<const UnitClass*>(product)->Class;
+            if (unittype->IsToHarvest || unittype->IsToVeinHarvest) continue;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+
+/**
+ *  AF-0009U: Drops an economy savings goal once its building has started.
+ */
+void HouseClassExtension::Clear_Advanced_AI_Economy_Savings() const
+{
+    const auto found = SavingsGoals.find(static_cast<int>(This_Const()->HeapID));
+    if (found != SavingsGoals.end() && found->second.Economy) {
+        SavingsGoals.erase(found);
+    }
+}
+
+
+/**
+ *  AF-0009U: Applies the planner's savings goal to a unit start.
+ *  Harvesters, recovery units, self defense and an outnumbered army keep priority.
+ */
+void HouseClassExtension::Reserve_Advanced_AI_Savings(const TechnoTypeClass* type, AdvancedAIUnitStartBudget& budget) const
+{
+    const HouseClass* house = This_Const();
+    const auto found = SavingsGoals.find(static_cast<int>(house->HeapID));
+    if (found == SavingsGoals.end()) return;
+
+    const auto& goal = found->second;
+    if (Frame - goal.Frame > SavingsGoalLifetime || goal.Amount <= budget.Reserve) return;
+
+    // The expansion site was lost (or never found): don't keep the credits back.
+    if (Is_Expansion_Savings_Reason(goal.Reason) && !Has_Advanced_AI_Expansion_Site()) return;
+
+    if (type->RTTI == RTTI_UNITTYPE) {
+        const auto* unittype = static_cast<const UnitTypeClass*>(type);
+        if (unittype->IsToHarvest || unittype->IsToVeinHarvest) return;
+    }
+
+    /**
+     *  AF-0009U: Under attack, unit starts normally ignore savings so units can
+     *  defend. Against an air attack ("air-defense") ground-only units cannot
+     *  help: they keep waiting for the anti-aircraft defense, while units that
+     *  can hit air targets are never held back by it.
+     */
+    const bool air_goal = std::string_view(goal.Reason).starts_with("air-defense");
+    if (air_goal && Advanced_AI_Can_Hit_Air(type)) return;
+    if (!air_goal && house->LATime > 0 && house->LATime + TICKS_PER_MINUTE > Frame) return;
+
+    // Technology waits while the army is weaker than the enemy, the economy does not.
+    if (!goal.Economy && (!Is_Advanced_AI_Unit_Production() || AdvAI_Is_Disadvantaged())) return;
+
+    budget.Reserve = goal.Amount;
+    budget.ReserveReason = goal.Reason;
+}
+
+
+bool HouseClassExtension::Needs_Advanced_AI_Recovery_Unit(const UnitTypeClass* type) const
+{
+    HouseClass* house = This();
+    if (std::find(Rule->HarvesterUnit.begin(), Rule->HarvesterUnit.end(), type) != Rule->HarvesterUnit.end()) {
+        if (house->Count_Owned(Rule->HarvesterUnit) > 0) return false;
+        return std::any_of(Buildings.begin(), Buildings.end(), [house, type](const BuildingClass* building) {
+            return Usable_Owned_Building(building, house) && building->Class->IsRefinery &&
+                std::find(type->Dock.begin(), type->Dock.end(), building->Class) != type->Dock.end();
+        });
+    }
+    if (house->ConstructionYards.Count() != 0 || !type->DeploysInto || !type->DeploysInto->IsConstructionYard) return false;
+    const auto& base_units = RuleExtension->BaseUnit;
+    return (type == Rule->BaseUnit || std::find(base_units.begin(), base_units.end(), type) != base_units.end()) &&
+        house->Count_Owned(RuleExtension->BaseUnit) == 0 &&
+        (!Rule->BaseUnit || house->UQuantity.Value(Rule->BaseUnit->HeapID) == 0);
+}
+
+void HouseClassExtension::Reserve_Advanced_AI_Infrastructure(const TechnoClass* building_product,
+    AdvancedAIUnitStartBudget& budget) const
+{
+    HouseClass* house = This();
+    const auto found = BuildingStarts.find(static_cast<int>(house->HeapID));
+    if (found == BuildingStarts.end()) return;
+    const auto& start = found->second;
+    const auto* queued = Building_Order_Type(house->BuildStructure);
+    const bool pending = !building_product && queued && start.SelectedType == house->BuildStructure &&
+        start.RejectedType != house->BuildStructure;
+    // AF-0009U: A selected refinery is protected even as an optional B2
+    // resource expansion; otherwise unit starts took its credits before it began.
+    const auto protect = [](const BuildingTypeClass* type, bool optional, bool threat_defense) {
+        return threat_defense || type->IsRefinery || (!optional && (type->IsConstructionYard ||
+            type->Power > type->Drain || Matches_Role(type, InfrastructureRole::Barracks) ||
+            Matches_Role(type, InfrastructureRole::Weapons)));
+    };
+
+    const auto* goal = start.Goal.Type;
+    const bool pending_supply = pending && start.Supply == house->BuildStructure;
+    const bool producing_supply = building_product && start.SupplyProduct == building_product->ID &&
+        static_cast<const BuildingClass*>(building_product)->Class->HeapID == start.Supply;
+    const bool threat_goal = start.Goal.EmergencyDefense || start.Goal.PreventiveDefense;
+    const bool protect_goal = goal && (!pending || goal != queued) &&
+        (start.SupplyCompleted || pending_supply || producing_supply) &&
+        Frame >= start.GoalFrame && Frame - start.GoalFrame < 3 * TICKS_PER_MINUTE &&
+        protect(goal, start.GoalOptional, threat_goal) && Placed_Building_Count(house, goal) < start.GoalCount;
+
+    const bool protect_order = pending && (protect(queued, start.Optional, start.ThreatDefenseOrder) ||
+        (pending_supply && protect_goal));
+    if (protect_order) {
+        budget.Reserve = std::max(0, queued->Cost_Of(house));
+        budget.ReserveReason = "infrastructure-order";
+    }
+    // An allocated power product is already covered by its factory balance.
+    if (protect_goal) {
+        budget.Reserve += std::max(0, goal->Cost_Of(house));
+        budget.ReserveReason = "infrastructure-after-power";
+    }
+    if ((protect_order && start.ThreatDefenseOrder) || (protect_goal && threat_goal)) {
+        const auto defense = PreventiveDefenses.find(static_cast<int>(house->HeapID));
+        const bool urgent = (protect_order && start.EmergencyDefenseOrder) || (protect_goal && start.Goal.EmergencyDefense) ||
+            (defense != PreventiveDefenses.end() && defense->second.Focus.Urgent);
+        const long long remaining = budget.Uncommitted - budget.Cost;
+        budget.Reserve += Threat_Defense_Reserve(remaining, Advanced_AI_Refinery_Reserve(), urgent);
+    }
+}
+
+AdvancedAIUnitStartBudget HouseClassExtension::Check_Advanced_AI_Unit_Start(const TechnoTypeClass* type) const
+{
+    HouseClass* house = This();
+    AdvancedAIUnitStartBudget budget;
+    budget.Uncommitted = house->Available_Money();
+    budget.Cost = type->Cost_Of(house);
+    const TechnoClass* building_product = nullptr;
+    int pending = 0;
+    for (const FactoryClass* factory : Factories) {
+        if (!factory || factory->House != house) continue;
+        const TechnoClass* product = factory->Get_Object();
+        if (!product) continue;
+        budget.Uncommitted -= std::max(0, factory->Balance);
+        if (!building_product && product->RTTI == RTTI_BUILDING) building_product = product;
+        if (product->TClass == type && product->IsInLimbo) ++pending;
+    }
+
+    // Preserve the native recovery path and its installment-based start.
+    if (budget.Cost < 0) {
+        budget.Blocked = "invalid-cost";
+        return budget;
+    }
+    if (type->RTTI == RTTI_UNITTYPE && Needs_Advanced_AI_Recovery_Unit(static_cast<const UnitTypeClass*>(type))) {
+        budget.ReserveReason = "recovery-unit";
+        return budget;
+    }
+    Reserve_Advanced_AI_Infrastructure(building_product, budget);
+    Reserve_Advanced_AI_Savings(type, budget);
+    if (budget.Uncommitted >= budget.Cost + budget.Reserve &&
+        house->BuildUnit >= UNIT_FIRST && house->BuildUnit < UnitTypes.Count()) {
+        const auto* recovery = UnitTypes[house->BuildUnit];
+        if (recovery && Needs_Advanced_AI_Recovery_Unit(recovery) && recovery->Who_Can_Build_Me(true, true, true, house)) {
+            const bool has_infrastructure = budget.Reserve > 0;
+            budget.Reserve += std::max(0, recovery->Cost_Of(house));
+            budget.ReserveReason = has_infrastructure ? "infrastructure-and-recovery-unit" : "recovery-unit";
+        }
+    }
+    if (const char* limit = Advanced_AI_Unit_Start_Limit(type)) {
+        budget.Blocked = limit;
+        budget.ClearRequest = true;
+    }
+    else if (budget.Uncommitted < budget.Cost) budget.Blocked = "committed-funds";
+    else if (budget.Uncommitted - budget.Cost < budget.Reserve) budget.Blocked = "reserved-funds";
+    else if (Is_Advanced_AI_Economy_Phase_Limited(type)) budget.Blocked = "economy-phase";
+    // AF-0009U: Tactic teams have no TaskForce slots; their MaxCost and the
+    // tactic duration limit parallel production instead.
+    else if (pending && !Is_Advanced_AI_Unit_Production() && !Has_Unfilled_Team_Demand(house, type, pending)) {
+        budget.Blocked = "order-already-in-production";
+    }
+    return budget;
+}
+
+void HouseClassExtension::Trace_Advanced_AI_Unit_Start(const TechnoTypeClass* type, const AdvancedAIUnitStartBudget& budget,
+    const char* outcome) const
+{
+#ifdef NDEBUG
+    if (!Vinifera_DeveloperMode) return;
+#endif
+    const int house = static_cast<int>(This_Const()->HeapID);
+    const auto key = std::make_tuple(house, type->RTTI, type->Fetch_Heap_ID());
+    const char* reason = budget.Blocked ? budget.Blocked : "none";
+    const std::string_view result = outcome;
+    if (result == "started" || result == "first-payment-pending") {
+        UnitStartTraces.erase(key);
+    } else {
+        const std::tuple<std::string_view, std::string_view, std::string_view> state{result, reason, budget.ReserveReason};
+        const auto previous = UnitStartTraces.find(key);
+        if (previous != UnitStartTraces.end() && previous->second == state) return;
+        UnitStartTraces.insert_or_assign(key, state);
+    }
+    DEV_DEBUG_INFO("AF-0009-UNIT-A: house={} frame={} unit={} result={} reason={} reserve-reason={} cost={} uncommitted={} reserve={}\n",
+        house, Frame, type->Name(), outcome, reason, budget.ReserveReason, budget.Cost, budget.Uncommitted, budget.Reserve);
 }
 
 long long HouseClassExtension::Advanced_AI_Refinery_Reserve() const
@@ -1783,8 +2591,7 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Development(con
     if (house->BuildUnit >= 0 && house->BuildUnit < UnitTypes.Count()) add_native_order(UnitTypes[house->BuildUnit]);
     if (house->BuildAircraft >= 0 && house->BuildAircraft < AircraftTypes.Count()) add_native_order(AircraftTypes[house->BuildAircraft]);
     for (TeamClass* team : Teams) {
-        if (!team || team->House != house || !team->Class || !team->Class->TaskForce ||
-            !((team->Class->IsReinforcable && !team->IsFullStrength) || (!team->IsForcedActive && !team->IsHasBeen))) continue;
+        if (!Team_Needs_Members(team, house)) continue;
         DynamicVectorClass<const TechnoTypeClass*> missing;
         team->Team_Members(missing);
         for (const TechnoTypeClass* type : missing) {
@@ -2036,6 +2843,8 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Technology(cons
 
     if (funds <= reserve || surplus < 0 || !Has_Advanced_AI_Technology_Economy()) {
         reason = funds <= reserve ? "tech-blocked-credits" : surplus < 0 ? "tech-blocked-power" : "tech-economy-recovery";
+        // AF-0009U: Let the credits reach the refinery reserve before units spend them.
+        if (funds <= reserve) Request_Advanced_AI_Savings(reserve + 1, "technology-refinery-reserve", false);
         trace(nullptr, nullptr, 0);
         return nullptr;
     }
@@ -2157,8 +2966,9 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Technology(cons
         const bool superweapon = type->SuperWeapon != SUPER_NONE || type->SuperWeapon2 != SUPER_NONE;
         if (!type->PowersUpBuilding.empty()) {
             if (type->Power > type->Drain && !superweapon) continue;
-            candidate.Priority = 4;
-            candidate.Role = "technology-upgrade";
+            // AF-0009U: Superweapon uplinks (Ion Cannon, Drop Pods) follow right after their upgrade center.
+            candidate.Priority = superweapon ? 2 : 4;
+            candidate.Role = superweapon ? "superweapon-upgrade" : "technology-upgrade";
         } else if (radar(type)) {
             candidate.Priority = 0;
             candidate.Role = "radar";
@@ -2217,8 +3027,24 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Technology(cons
             trace(candidate, order, required);
             return order;
         }
+
+        /**
+         *  AF-0009U: Core technology (radar, tech center, upgrade center, superweapon
+         *  uplinks) that only lacks credits is saved for. Cheaper lower-ranked buildings
+         *  must not take the credits first, or the expensive steps never happen.
+         */
+        if (candidate->Priority <= 2 && std::string_view(blocked) == "infrastructure-budget-insufficient") {
+            Request_Advanced_AI_Savings(required, "technology-savings", false);
+            first_blocker = "tech-blocked-credits";
+            first_minimum = required;
+            break;
+        }
+
         if (candidate == ranked.front()) {
-            if (std::string_view(blocked) == "infrastructure-budget-insufficient") blocked = "tech-blocked-credits";
+            if (std::string_view(blocked) == "infrastructure-budget-insufficient") {
+                blocked = "tech-blocked-credits";
+                Request_Advanced_AI_Savings(required, "technology-savings", false);
+            }
             if (std::string_view(blocked) == "infrastructure-power-or-cost-unavailable") blocked = "tech-blocked-power";
             first_blocker = blocked;
             first_minimum = required;
@@ -2348,9 +3174,19 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
     const auto choose = [&](DefenseRole role, const char* reason, const Cell* focus = nullptr,
         const PreventiveContact* contact = nullptr, bool require_contact_range = false, bool urgent = false) -> const BuildingTypeClass* {
         const BuildingTypeClass* best = nullptr;
-        std::tuple<long long, int, long long, int> best_rank{};
+        std::tuple<bool, long long, int, long long, int> best_rank{};
+        long long best_value = 0;
         bool site_rejected = false;
         bool resources_rejected = false;
+        /**
+         *  AF-0009U: A defense type that was lost repeatedly within two minutes
+         *  ranks behind types that held. A stronger type that only lacks credits
+         *  becomes a savings goal instead of the next cheap loss.
+         */
+        const int house_id = static_cast<int>(house->HeapID);
+        const BuildingTypeClass* upgrade = nullptr;
+        long long upgrade_value = 0;
+        long long upgrade_funds = 0;
         for (const BuildingTypeClass* type : BuildingTypes) {
             if ((required && type != required) || !Valid_Building_Type(type) || !Is_Advanced_AI_Defense_Type(type)) continue;
             const auto weapon = contact ? Defense_Weapon_Against(type, *contact) : DefenseWeapon{0, Defense_Range(type, role)};
@@ -2364,15 +3200,24 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             }
             const char* blocked = nullptr;
             long long required_funds = 0;
+            // Rating only: the power trace follows for the chosen type below.
+            ++PowerTraceMute;
             const auto* order = Fund_Optional_Building(*this, type, funds, reserve, required_funds, blocked, false, emergency || contact);
+            --PowerTraceMute;
+            const long long defense_value = std::max(1, Defense_Rating(type, role)) + 4LL * weapon.Strength;
+            const bool held = Recent_Defense_Losses(house_id, type->HeapID) < DefenseLossLimit;
             if (!order) {
                 resources_rejected |= std::string_view(blocked) != "placement-retry-cooldown";
+                if (held && std::string_view(blocked) == "infrastructure-budget-insufficient" && defense_value > upgrade_value) {
+                    upgrade = type;
+                    upgrade_value = defense_value;
+                    upgrade_funds = required_funds;
+                }
                 continue;
             }
             const long long cost = required_funds - reserve;
             const long long price_weight = 1 + cost * std::max(1LL, reserve) / std::max(1LL, funds - reserve);
-            const long long defense_value = std::max(1, Defense_Rating(type, role)) + 4LL * weapon.Strength;
-            const auto rating = std::make_tuple(1024LL * defense_value / price_weight,
+            const auto rating = std::make_tuple(held, 1024LL * defense_value / price_weight,
                 range, -cost, -static_cast<int>(type->HeapID));
             if (best && rating <= best_rank) continue;
             if (focus) {
@@ -2390,10 +3235,26 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             best = order;
             chosen_type = type;
             best_rank = rating;
+            best_value = defense_value;
             minimum = required_funds;
             goal = order == type ? AdvancedAIPowerGoal{} : AdvancedAIPowerGoal{type, false, false, emergency, preventive};
         }
-        if (best) need = reason;
+        if (best && !std::get<0>(best_rank) && upgrade && upgrade_value > best_value) {
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} defense-upgrade-savings={} instead-of={} lost={} funds={}\n",
+                house_id, Frame, upgrade->Name(), chosen_type->Name(),
+                Recent_Defense_Losses(house_id, chosen_type->HeapID), upgrade_funds);
+            Request_Advanced_AI_Savings(upgrade_funds, "defense-upgrade", true);
+            best = nullptr;
+            chosen_type = nullptr;
+            goal = {};
+            rejected = "saving-for-stronger-defense";
+            return nullptr;
+        }
+        if (best) {
+            need = reason;
+            // The power plant is ordered for the chosen type only; log it now.
+            if (best != chosen_type) Prioritize_Advanced_AI_Power(chosen_type);
+        }
         rejected = site_rejected ? "no-legal-defense-site" : resources_rejected ? "insufficient-resources" : "no-buildable-defense";
         return best;
     };
@@ -2415,12 +3276,21 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             const size_t index = static_cast<size_t>(role);
             const auto& threat = threats[index];
             if (!threat.Attackers || !Owns_Defense_Target(house, threat.Target)) continue;
+
+            /**
+             *  AF-0009U: A lone scout scratching a building does not justify new
+             *  defense structures; units handle it. Respond to groups or to real damage.
+             */
+            static constexpr long long MinimumResponseDamage = 100;
+            if (threat.Attackers < 3 && threat.Damage < MinimumResponseDamage) continue;
+
             Scan_Preventive_Defense(house, state, true);
             Cell defended = threat.Target;
             const auto* contact = Find_Visible_Attacker(state, threat.AttackerID, defended);
             const auto response_role = contact ? contact->Role : role;
             const Cell intercept = contact ? contact->Position : threat.Target;
-            const int desired = static_cast<int>(std::min(5LL, 2 + (threat.Attackers - 1) / 2 + threat.Damage / 600));
+            // AF-0009U: One covering defense per small raid; more for groups and heavy damage.
+            const int desired = static_cast<int>(std::min(5LL, 1 + (threat.Attackers - 1) / 2 + threat.Damage / 800));
             int covering = 0;
             for (const auto* building : owned_defenses) {
                 if (!Operational_Building(building) && building->Mission != MISSION_CONSTRUCTION &&
@@ -2477,15 +3347,19 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             int closing = 0;
             int within_range = 0;
             int seen = 0;
+            long long damage = 0;
             for (const auto& contact : group.Contacts) {
                 strength += contact.Strength;
                 closing += contact.Closing;
                 within_range += contact.InRange;
                 seen += contact.ObservedBefore;
+                damage += Recent_Attacker_Damage(house, contact.ID);
             }
             const bool urgent = (within_range >= 2 && strength >= 12) ||
-                (group.Contacts.size() >= 3 && strength >= 18 && (closing > 0 || within_range > 0));
-            const bool significant = urgent || (group.Contacts.size() >= 2 && strength >= (group.Importance == 2 ? 12 : 15) &&
+                (group.Contacts.size() >= 3 && strength >= 18 && (closing > 0 || within_range > 0)) ||
+                damage >= Urgent_Attacker_Damage;
+            const bool significant = urgent || damage >= Significant_Attacker_Damage ||
+                (group.Contacts.size() >= 2 && strength >= (group.Importance == 2 ? 12 : 15) &&
                 (closing > 0 || (group.Contacts.size() >= 3 && seen >= 2)));
             for (const DefenseRole role : DefenseRoles) {
                 int role_strength = 0;
@@ -2534,7 +3408,14 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
                 coverage += std::min(80, weapon.Strength);
             }
             const int desired = std::clamp(12 + threat.RoleStrength / 2 + 3 * threat.Group->Importance, 20, 100);
-            reserve = Threat_Defense_Reserve(funds, refinery_reserve, threat.Urgent);
+
+            /**
+             *  AF-0009U: Flying enemies near an asset without any anti-aircraft coverage are
+             *  urgent: no unit or ground defense can stop them (for example jumpjets).
+             */
+            const bool uncovered_air = contact.Role == DefenseRole::Air && coverage == 0;
+            const bool urgent = threat.Urgent || uncovered_air;
+            reserve = Threat_Defense_Reserve(funds, refinery_reserve, urgent);
             const char* block = nullptr;
             if (coverage >= desired) block = "defense-already-sufficient";
             else if (!required && state.LastOrder >= 0 && Frame >= state.LastOrder && Frame - state.LastOrder < Preventive_Cooldown &&
@@ -2543,7 +3424,7 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             } else if (defenses >= Rule->DefenseLimit) block = "defense-limit";
             else if (funds <= reserve) block = "insufficient-resources";
             else if (searches++ >= 3) break;
-            else if (const auto* order = choose(contact.Role, "preventive-base-defense", &asset, &contact, contact.InRange, threat.Urgent)) {
+            else if (const auto* order = choose(contact.Role, "preventive-base-defense", &asset, &contact, contact.InRange, urgent)) {
                 state.Planned = chosen_type;
                 state.Focus = chosen_focus;
                 state.LastOrder = Frame;
@@ -2553,6 +3434,24 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
                     threat.Group, &contact, threat.Strength, coverage, desired, chosen_type, chosen_site, order);
                 return order;
             } else block = rejected;
+
+            /**
+             *  AF-0009U: An uncovered air threat that only lacks credits becomes an
+             *  economy savings goal, so unit starts leave the anti-aircraft defense funded.
+             */
+            if (uncovered_air && std::string_view(block) == "insufficient-resources") {
+                long long cheapest = 0;
+                for (const BuildingTypeClass* type : BuildingTypes) {
+                    if (!Valid_Building_Type(type) || !Is_Advanced_AI_Defense_Type(type) || Defense_Range(type, DefenseRole::Air) <= 0 ||
+                        !Can_Advanced_AI_Build_Type(type, false)) continue;
+                    const long long cost = type->Cost_Of(const_cast<HouseClass*>(house));
+                    if (cost > 0 && (cheapest == 0 || cost < cheapest)) cheapest = cost;
+                }
+                if (cheapest > 0) {
+                    Request_Advanced_AI_Savings(cheapest + Threat_Defense_Reserve(cheapest, refinery_reserve, true), "air-defense", true);
+                }
+            }
+
             if (!first) {
                 first = &threat;
                 decision = std::string_view(block) == "defense-order-cooldown" ? "defense-already-planned" : block;
@@ -2588,12 +3487,22 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
     }
 
     const int budget_bonus = basic_only ? 0 : static_cast<int>(std::min(3LL, (funds - reserve) / std::max(1LL, 2 * reserve)));
-    const int ground_goal = 1 + refineries / 2 + power_plants / 4 + budget_bonus;
+
+    /**
+     *  AF-0009U: Credits above AdvancedAIRichFunds that unit production cannot
+     *  spend (factories at their limit) raise the defense goals: one more ground
+     *  defense per 2000 credits (at most 10) and half as many anti-aircraft
+     *  defenses. AdvancedAIDefenseSpread places them at uncovered buildings.
+     */
+    const long long rich_funds = RuleExtension->AdvancedAIRichFunds > 0 ? funds - RuleExtension->AdvancedAIRichFunds : 0;
+    const int rich_bonus = basic_only || rich_funds <= 0 ? 0 : static_cast<int>(std::min(10LL, rich_funds / 2000));
+    const int ground_goal = 1 + refineries / 2 + power_plants / 4 + budget_bonus + rich_bonus;
     if (ground < ground_goal) {
         if (const auto* order = choose(ground == 0 ? DefenseRole::Infantry : DefenseRole::Armor,
-            ground == 0 ? "basic-ground-defense" : "additional-ground-defense")) return order;
+            ground == 0 ? "basic-ground-defense" : rich_bonus > 0 && ground >= ground_goal - rich_bonus ?
+            "rich-ground-defense" : "additional-ground-defense")) return order;
     }
-    if (anti_air < std::max(1, refineries / 2)) {
+    if (anti_air < std::max(1, refineries / 2) + rich_bonus / 2) {
         return choose(DefenseRole::Air, anti_air == 0 ? "basic-air-defense" : "additional-air-defense");
     }
     return nullptr;

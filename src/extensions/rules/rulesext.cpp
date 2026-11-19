@@ -36,6 +36,7 @@
 #include "particletypeext.h"
 #include "prerequisitegroup.h"
 #include "rockettype.h"
+#include "advaitactictype.h"
 #include "rules.h"
 #include "side.h"
 #include "sideext.h"
@@ -115,7 +116,27 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     PlayerNormal(),
     IsHasPlayerNormal(false),
     PersistTagsOnAIDeploy(false),
-    IsUseAdvancedAI(false)
+    IsUseAdvancedAI(false),
+    IsAdvancedAIUnitProduction(true),
+    AdvancedAISameUnitAntiBias(0.1),
+    AdvancedAIOverweightedArmorTypeAntiBias(5.0),
+    AdvancedAIOffensiveWeaponValueMultiplier(50),
+    AdvancedAISkipInfantryProductionValueThreshold(50),
+    AdvancedAIConditionalSkipInfantryProductionValueThreshold(100),
+    AdvancedAIVulnerableBuildingMaxThreat(50),
+    AdvancedAILightlyDefendedBuildingMaxThreat(500),
+    AdvancedAIMaxTeamSize(20),
+    AdvancedAITeamInfantryCostPunishmentThreshold(3000),
+    AdvancedAICheapInfantryCostThreshold(500),
+    AdvancedAITeamCheapInfantryMax(30),
+    AdvancedAITacticSelectionDelay{ 0, 300, 900 },
+    IsAdvancedAISelfDefense(true),
+    IsAdvancedAIEngineerCapture(true),
+    IsAdvancedAIKeepDefaultTactics(false),
+    IsAdvancedAIDefenseSpread(true),
+    AdvancedAIRichFunds(8000),
+    AdvancedAIHarvestersPerRefinery(2),
+    AIVeinPathCost(10.0)
 {
     /**
      *  Due to the changes made when addressing issues #632, 633, and 635, we
@@ -284,6 +305,17 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(BaseUnit.Count());
     crc(PersistTagsOnAIDeploy);
     crc(IsUseAdvancedAI);
+    crc(IsAdvancedAIUnitProduction);
+    crc(AdvancedAIOffensiveWeaponValueMultiplier);
+    crc(AdvancedAIMaxTeamSize);
+    crc(IsAdvancedAISelfDefense);
+    crc(IsAdvancedAIEngineerCapture);
+    crc(IsAdvancedAIKeepDefaultTactics);
+    crc(IsAdvancedAIDefenseSpread);
+    crc(AdvancedAIRichFunds);
+    crc(AdvancedAIHarvestersPerRefinery);
+    crc(AIVeinPathCost);
+    crc(AdvancedAITacticTypes.Count());
 }
 
 
@@ -422,6 +454,12 @@ void RulesClassExtension::Process(CCINIClass &ini)
     AI(ini);
 
     /**
+     *  AF-0009U: Read the Advanced AI tactic types and fill empty categories
+     *  with the built-in defaults.
+     */
+    AdvancedAITactics(ini);
+
+    /**
      *  Run some checks to ensure certain values are as expected.
      */
     Check();
@@ -448,6 +486,32 @@ void RulesClassExtension::Initialize(CCINIClass &ini)
     // Start each regular rules/scenario load with the documented default.
     // Subsequent additions retain this value unless they explicitly override it.
     IsUseAdvancedAI = false;
+
+    // AF-0009U: Restore the tactic production defaults the same way, so that a
+    // value set by a previous game does not carry over into the next one.
+    IsAdvancedAIUnitProduction = true;
+    AdvancedAISameUnitAntiBias = 0.1;
+    AdvancedAIOverweightedArmorTypeAntiBias = 5.0;
+    AdvancedAIOffensiveWeaponValueMultiplier = 50;
+    AdvancedAISkipInfantryProductionValueThreshold = 50;
+    AdvancedAIConditionalSkipInfantryProductionValueThreshold = 100;
+    AdvancedAIVulnerableBuildingMaxThreat = 50;
+    AdvancedAILightlyDefendedBuildingMaxThreat = 500;
+    AdvancedAIMaxTeamSize = 20;
+    AdvancedAITeamInfantryCostPunishmentThreshold = 3000;
+    AdvancedAICheapInfantryCostThreshold = 500;
+    AdvancedAITeamCheapInfantryMax = 30;
+    AdvancedAITacticSelectionDelay[0] = 0;
+    AdvancedAITacticSelectionDelay[1] = 300;
+    AdvancedAITacticSelectionDelay[2] = 900;
+    IsAdvancedAISelfDefense = true;
+    IsAdvancedAIEngineerCapture = true;
+    IsAdvancedAIKeepDefaultTactics = false;
+    IsAdvancedAIDefenseSpread = true;
+    AdvancedAIRichFunds = 8000;
+    AdvancedAIHarvestersPerRefinery = 2;
+    AIVeinPathCost = 10.0;
+
     Verses::Clear();
     ArmorTypeClass::One_Time();
     PrerequisiteGroupClass::One_Time();
@@ -852,7 +916,88 @@ bool RulesClassExtension::AI(CCINIClass& ini)
     AIHarvestersPerRefinery = ini.Get_IntList(AI, "HarvestersPerRefinery", AIHarvestersPerRefinery);
     IsAIOneHarvesterInSingleplayer = ini.Get_Bool(AI, "AIOneHarvesterInSingleplayer", IsAIOneHarvesterInSingleplayer);
 
+    /**
+     *  AF-0009U: DTA-style Advanced AI unit production settings.
+     */
+    IsAdvancedAIUnitProduction = ini.Get_Bool(AI, "AdvancedAIUnitProduction", IsAdvancedAIUnitProduction);
+    AdvancedAISameUnitAntiBias = ini.Get_Float(AI, "AdvancedAISameUnitAntiBias", AdvancedAISameUnitAntiBias);
+    AdvancedAIOverweightedArmorTypeAntiBias = ini.Get_Float(AI, "AdvancedAIOverweightedArmorTypeAntiBias", AdvancedAIOverweightedArmorTypeAntiBias);
+    AdvancedAIOffensiveWeaponValueMultiplier = ini.Get_Int(AI, "AdvancedAIOffensiveWeaponValueMultiplier", AdvancedAIOffensiveWeaponValueMultiplier);
+    AdvancedAISkipInfantryProductionValueThreshold = ini.Get_Int(AI, "AdvancedAISkipInfantryProductionValueThreshold", AdvancedAISkipInfantryProductionValueThreshold);
+    AdvancedAIConditionalSkipInfantryProductionValueThreshold = ini.Get_Int(AI, "AdvancedAIConditionalSkipInfantryProductionValueThreshold", AdvancedAIConditionalSkipInfantryProductionValueThreshold);
+    AdvancedAIVulnerableBuildingMaxThreat = ini.Get_Int(AI, "AdvancedAIVulnerableBuildingMaxThreat", AdvancedAIVulnerableBuildingMaxThreat);
+    AdvancedAILightlyDefendedBuildingMaxThreat = ini.Get_Int(AI, "AdvancedAILightlyDefendedBuildingMaxThreat", AdvancedAILightlyDefendedBuildingMaxThreat);
+    AdvancedAIMaxTeamSize = std::max(1, ini.Get_Int(AI, "AdvancedAIMaxTeamSize", AdvancedAIMaxTeamSize));
+    AdvancedAITeamInfantryCostPunishmentThreshold = ini.Get_Int(AI, "AdvancedAITeamInfantryCostPunishmentThreshold", AdvancedAITeamInfantryCostPunishmentThreshold);
+    AdvancedAICheapInfantryCostThreshold = ini.Get_Int(AI, "AdvancedAICheapInfantryCostThreshold", AdvancedAICheapInfantryCostThreshold);
+    AdvancedAITeamCheapInfantryMax = ini.Get_Int(AI, "AdvancedAITeamCheapInfantryMax", AdvancedAITeamCheapInfantryMax);
+    IsAdvancedAISelfDefense = ini.Get_Bool(AI, "AdvancedAISelfDefense", IsAdvancedAISelfDefense);
+    IsAdvancedAIEngineerCapture = ini.Get_Bool(AI, "AdvancedAIEngineerCapture", IsAdvancedAIEngineerCapture);
+    IsAdvancedAIKeepDefaultTactics = ini.Get_Bool(AI, "AdvancedAIKeepDefaultTactics", IsAdvancedAIKeepDefaultTactics);
+    IsAdvancedAIDefenseSpread = ini.Get_Bool(AI, "AdvancedAIDefenseSpread", IsAdvancedAIDefenseSpread);
+    AdvancedAIRichFunds = std::max(0, ini.Get_Int(AI, "AdvancedAIRichFunds", AdvancedAIRichFunds));
+    AdvancedAIHarvestersPerRefinery = std::clamp(ini.Get_Int(AI, "AdvancedAIHarvestersPerRefinery", AdvancedAIHarvestersPerRefinery), 1, 5);
+    AIVeinPathCost = std::max(0.0, ini.Get_Float(AI, "AIVeinPathCost", AIVeinPathCost));
+
+    TypeList<int> delays(DIFF_COUNT);
+    for (int i = 0; i < DIFF_COUNT; ++i) {
+        delays.Add(AdvancedAITacticSelectionDelay[i]);
+    }
+    delays = ini.Get_IntList(AI, "AdvancedAITacticSelectionDelay", delays);
+    for (int i = 0; i < DIFF_COUNT && i < delays.Count(); ++i) {
+        AdvancedAITacticSelectionDelay[i] = std::max(0, delays[i]);
+    }
+
     return true;
+}
+
+
+/**
+ *  AF-0009U: Reads the Advanced AI tactic type lists and their sections.
+ *  Categories without any tactic receive the built-in Aftermath defaults.
+ *
+ *  @author: Rampastring (DTA), adapted for Aftermath
+ */
+void RulesClassExtension::AdvancedAITactics(CCINIClass& ini)
+{
+    static const struct {
+        const char* Section;
+        bool Air;
+        bool Naval;
+    } _lists[] = {
+        { "AdvancedAIGroundTactics", false, false },
+        { "AdvancedAIAirTactics", true, false },
+        { "AdvancedAINavalTactics", false, true },
+    };
+
+    char buf[128];
+
+    for (const auto& list : _lists) {
+        if (!ini.Is_Present(list.Section)) {
+            continue;
+        }
+
+        const int counter = ini.Entry_Count(list.Section);
+        for (int index = 0; index < counter; ++index) {
+            const char* entry = ini.Get_Entry(list.Section, index);
+            if (ini.Get_String(list.Section, entry, "", buf, sizeof(buf)) <= 0) {
+                continue;
+            }
+
+            AdvancedAITacticTypeClass* tactic = AdvancedAITacticTypeClass::Find_Or_Make(buf, list.Air, list.Naval);
+            if (tactic == nullptr) {
+                DEV_DEBUG_WARNING("Rules: Error processing AdvancedAITacticType \"{}\"!\n", buf);
+            }
+        }
+    }
+
+    for (int index = 0; index < AdvancedAITacticTypes.Count(); ++index) {
+        AdvancedAITacticTypes[index]->Read_INI(ini);
+    }
+
+    AdvancedAITacticTypeClass::Create_Defaults();
+
+    DEBUG_INFO("Rules: Processed AdvancedAITacticTypes (Count: {}).\n", AdvancedAITacticTypes.Count());
 }
 
 

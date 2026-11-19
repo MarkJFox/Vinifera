@@ -27,6 +27,7 @@
 #include "newjumpjetlocomotion.h"
 #include "optionsext.h"
 #include "prerequisitegroup.h"
+#include "advaitactictype.h"
 #include "readline.h"
 #include "rocketlocomotion.h"
 #include "setup_hooks.h"
@@ -796,6 +797,7 @@ bool Vinifera_Register_Com_Objects()
     REGISTER_CLASS(ArmorTypeClass);
     REGISTER_CLASS(RocketTypeClass);
     REGISTER_CLASS(PrerequisiteGroupClass);
+    REGISTER_CLASS(AdvancedAITacticTypeClass);
 
     /**
      *  Other new entities.

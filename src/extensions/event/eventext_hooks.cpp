@@ -11,6 +11,7 @@
 
 #include "eventext_hooks.h"
 
+#include "advaitactictype.h"
 #include "aircraft.h"
 #include "buildingtypeext.h"
 #include "connmgr.h"
@@ -40,15 +41,91 @@
 
 static unsigned Scenario_Sync_CRC()
 {
-    const unsigned crc = TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
+    unsigned crc = TechnoTypeClassExtension::Balloon_Hover_Sync_CRC(
         BuildingTypeClassExtension::Custom_Foundation_Sync_CRC(ScenarioCRC));
-    if (!RuleExtension || !RuleExtension->IsUseAdvancedAI) return crc;
+    if (!RuleExtension) return crc;
+
+    // Aftermath: The computer vein path cost applies with and without the Advanced AI.
+    if (RuleExtension->AIVeinPathCost != 10.0) {
+        CRCEngine vein;
+        vein(crc);
+        vein(0x56454E31U); // VEN1
+        vein(RuleExtension->AIVeinPathCost);
+        crc = static_cast<unsigned>(vein());
+    }
+
+    if (!RuleExtension->IsUseAdvancedAI) return crc;
 
     // Compare the effective scenario setting after all Rules overrides.
     CRCEngine combined;
     combined(crc);
     combined(0x41463039U); // AF09
-    combined(13U); // Advanced AI planner revision.
+    combined(17U); // Advanced AI planner, factory budget and AF-0009U tactic production revision.
+
+    // AF-0009U: All clients must run the same tactic production settings.
+    combined(RuleExtension->IsAdvancedAIUnitProduction);
+    combined(RuleExtension->AdvancedAIOffensiveWeaponValueMultiplier);
+    combined(RuleExtension->AdvancedAIMaxTeamSize);
+    combined(RuleExtension->IsAdvancedAISelfDefense);
+    combined(RuleExtension->IsAdvancedAIEngineerCapture);
+    combined(RuleExtension->IsAdvancedAIKeepDefaultTactics);
+    combined(RuleExtension->IsAdvancedAIDefenseSpread);
+    combined(RuleExtension->AdvancedAIRichFunds);
+    combined(RuleExtension->AdvancedAIHarvestersPerRefinery);
+    combined(AdvancedAITacticTypes.Count());
+
+    // The tactic lists in order, with their conditions and team parameters.
+    for (int i = 0; i < AdvancedAITacticTypes.Count(); i++) {
+        const AdvancedAITacticTypeClass* tactic = AdvancedAITacticTypes[i];
+        if (tactic == nullptr) {
+            combined(-1);
+            continue;
+        }
+        combined(tactic->Name());
+        combined(static_cast<int>(tactic->GroundTacticType));
+        combined(static_cast<int>(tactic->AirTacticType));
+        combined(static_cast<int>(tactic->NavalTacticType));
+        combined(static_cast<int>(tactic->House));
+        combined(tactic->MinimumExpectedDuration);
+        combined(tactic->MaximumExpectedDuration);
+        combined(tactic->ScaleDurationByBuildTime);
+        combined(tactic->SetTacticalValueIndex);
+        combined(tactic->SetTacticalValueMin);
+        combined(tactic->SetTacticalValueMax);
+        combined(tactic->SetTacticalValueChance);
+        combined(tactic->FrameBasedDurationIncrease);
+        combined(tactic->FrameBasedDurationTimeStep);
+        combined(tactic->FrameBasedDurationIncreaseMax);
+        combined(tactic->IsAir);
+        combined(tactic->IsNaval);
+        combined(tactic->MaxInstances);
+
+        combined(tactic->Conditions.Count());
+        for (int c = 0; c < tactic->Conditions.Count(); c++) {
+            const auto& condition = tactic->Conditions[c];
+            combined(static_cast<int>(condition.ConditionType));
+            combined(condition.Parameter1);
+            combined(condition.Parameter2);
+        }
+
+        combined(tactic->AdvAITeamTypes.Count());
+        for (int t = 0; t < tactic->AdvAITeamTypes.Count(); t++) {
+            const auto& teamtype = tactic->AdvAITeamTypes[t];
+            combined(static_cast<int>(teamtype.ForcedTacticType));
+            combined(static_cast<int>(teamtype.TeamType));
+            combined(teamtype.IsSuicide);
+            combined(teamtype.IsTransportTeam);
+            combined(teamtype.AvoidThreats);
+            combined(teamtype.MaxCost);
+            combined(static_cast<int>(teamtype.LimitToRTTI));
+        }
+
+        combined(tactic->ScriptedTeamTypes.Count());
+        for (int t = 0; t < tactic->ScriptedTeamTypes.Count(); t++) {
+            combined(static_cast<const char*>(tactic->ScriptedTeamTypes[t].TeamTypeName));
+            combined(tactic->ScriptedTeamTypes[t].MaxWait);
+        }
+    }
     return static_cast<unsigned>(combined());
 }
 

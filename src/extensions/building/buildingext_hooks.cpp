@@ -1548,6 +1548,33 @@ void BuildingClassExt::_Factory_AI()
                         **  If everything is okay, create the factory.
                         */
                         if (allowed_factory) {
+                            const bool budgeted_unit =
+                                (ttype->RTTI == RTTI_INFANTRYTYPE || ttype->RTTI == RTTI_UNITTYPE || ttype->RTTI == RTTI_AIRCRAFTTYPE) &&
+                                !houseext->IsObserver && houseext->Is_Advanced_AI_Enabled();
+                            AdvancedAIUnitStartBudget unit_budget;
+                            if (budgeted_unit) {
+                                unit_budget = houseext->Check_Advanced_AI_Unit_Start(ttype);
+                                if (unit_budget.Blocked) {
+                                    houseext->Trace_Advanced_AI_Unit_Start(ttype, unit_budget, "waiting");
+
+                                    /**
+                                     *  AF-0009U: The request no longer fits its dock capacity or team
+                                     *  budget. Drop it so the selector chooses again instead of
+                                     *  keeping a request that blocks the other production.
+                                     */
+                                    if (unit_budget.ClearRequest) {
+                                        const int heapid = ttype->Fetch_Heap_ID();
+                                        if (ttype->RTTI == RTTI_AIRCRAFTTYPE && House->BuildAircraft == heapid) House->BuildAircraft = AIRCRAFT_NONE;
+                                        if (ttype->RTTI == RTTI_INFANTRYTYPE && House->BuildInfantry == heapid) House->BuildInfantry = INFANTRY_NONE;
+                                        if (ttype->RTTI == RTTI_UNITTYPE) {
+                                            if (House->BuildUnit == heapid) House->BuildUnit = UNIT_NONE;
+                                            if (houseext->BuildNavalUnit == heapid) houseext->BuildNavalUnit = UNIT_NONE;
+                                        }
+                                    }
+                                    return;
+                                }
+                            }
+
                             const auto* buildingtype = advanced_factory ? static_cast<const BuildingTypeClass*>(ttype) : nullptr;
                             if (buildingtype) {
                                 if (!houseext->Begin_Advanced_AI_Building_Attempt()) return;
@@ -1571,15 +1598,16 @@ void BuildingClassExt::_Factory_AI()
                                 } else {
                                     House->Production_Begun(Factory->Get_Object());
                                     const bool started = Factory->Start(false);
-                                    if (buildingtype) {
+                                    if (buildingtype || budgeted_unit) {
                                         // A successful Set owns the slot, including when the first payment fails.
                                         const bool running = Factory->Is_Building();
                                         start_result = started ? "started" :
                                             running ? "first-payment-pending" : "factory-start-failed";
-                                        if (!started && !running) houseext->Log_Advanced_AI_Error("factory-start-failed", buildingtype);
+                                        if (buildingtype && !started && !running) houseext->Log_Advanced_AI_Error("factory-start-failed", buildingtype);
                                     }
                                 }
                             }
+                            if (budgeted_unit) houseext->Trace_Advanced_AI_Unit_Start(ttype, unit_budget, start_result);
                             if (buildingtype) {
                                 houseext->Trace_Advanced_AI_Production("factory-start", start_result, buildingtype, 11, Factory);
                                 houseext->Trace_Advanced_AI_Building_Order("factory-start", start_result, buildingtype, Factory);
@@ -3680,6 +3708,7 @@ static ResultType __fastcall Observe_Advanced_AI_Building_Damage(BuildingClass* 
     HouseClassExtension* defender = nullptr;
     int attacker_id = -1;
     Cell target(0, 0);
+    bool base_hit = false;
     const int strength = building->Strength;
     if (RuleExtension && RuleExtension->IsUseAdvancedAI && source && strength > 0 && damage > 0) {
         if (source->RTTI == RTTI_AIRCRAFT || source->RTTI == RTTI_UNIT || source->RTTI == RTTI_INFANTRY) {
@@ -3691,6 +3720,17 @@ static ResultType __fastcall Observe_Advanced_AI_Building_Damage(BuildingClass* 
                     defender = extension;
                     attacker_id = attacker->ID;
                     target = building->Get_Cell();
+
+                    /**
+                     *  AF-0009U: A real base building near the base center. Deployed
+                     *  vehicles (artillery, tick tanks) at the front don't count.
+                     */
+                    static constexpr int BaseHitRadius = 30;
+                    const auto* btype = building->Class;
+                    const bool deployed_vehicle = btype->UndeploysInto != nullptr && !btype->IsConstructionYard;
+                    const bool near_base = house->Center == COORD_NONE ||
+                        Distance(building->Center_Coord(), house->Center) <= BaseHitRadius * CELL_LEPTON_W;
+                    base_hit = !deployed_vehicle && near_base;
                 }
             }
         }
@@ -3698,7 +3738,7 @@ static ResultType __fastcall Observe_Advanced_AI_Building_Damage(BuildingClass* 
 
     const auto result = building->TechnoClass::Take_Damage(damage, distance, warhead, source, forced, no_crew);
     if (defender && result != RESULT_NONE && result != RESULT_ALREADY_DESTROYED && building->Strength < strength) {
-        defender->Record_Advanced_AI_Building_Hit(attacker_id, target, strength - building->Strength);
+        defender->Record_Advanced_AI_Building_Hit(attacker_id, target, strength - building->Strength, base_hit);
     }
     return result;
 }

@@ -125,3 +125,10 @@ class TechnoClassExtension : public RadioClassExtension,
          */
         CDTimerClass<FrameTimerClass> IronCurtainTimer;
 };
+
+
+/**
+ *  Aftermath: Can any weapon of the techno hit the target at its current height
+ *  (anti-aircraft for flying, anti-ground for grounded targets)?
+ */
+bool Techno_Can_Hit_Target_Height(const TechnoClass* techno, const AbstractClass* target);

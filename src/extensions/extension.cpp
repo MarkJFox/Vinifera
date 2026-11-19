@@ -2017,7 +2017,8 @@ void Extension::Print_CRCs(FILE *fp, EventClass *ev)
 unsigned Extension::Get_Save_Version_Number()
 {
     // AF-0009 saves the Rules switch, even if it fits existing padding.
-    unsigned version = 0x200000;
+    // AF-0009U adds Advanced AI tactic, team and house production state.
+    unsigned version = 0x210000;
 
     /**
      *  For debug builds, offset the save file version.

@@ -153,6 +153,7 @@ BuildingTypeClassExtension::BuildingTypeClassExtension(const BuildingTypeClass *
     IsResetBudgetOnCapture(false),
     IsEligibleForAllyBuilding(false),
     EngineerChance(0),
+    IsAIEngineerCapture(false),
     IsHideDuringSpecialAnim(false),
     RoofDeployingAnim(nullptr),
     RoofDoorAnim(nullptr),
@@ -384,6 +385,9 @@ void BuildingTypeClassExtension::Object_CRC(CRCEngine &crc) const
 {
     crc(static_cast<int>(IsEligibleForAllyBuilding));
     crc(static_cast<int>(IsExclusiveFactory));
+    if (IsAIEngineerCapture) {
+        crc(0x41464543u); // AFEC: Advanced AI engineer capture target (only when set, keeps old CRCs).
+    }
     Custom_Foundation_CRC(crc);
     Aircraft_Docks_CRC(crc);
     Wall_Connections_CRC(crc);
@@ -419,6 +423,7 @@ bool BuildingTypeClassExtension::Read_INI(CCINIClass &ini)
     IsResetBudgetOnCapture = ini.Get_Bool(ini_name, "ProduceCashResetOnCapture", IsResetBudgetOnCapture);
 
     IsEligibleForAllyBuilding = ini.Get_Bool(ini_name, "EligibleForAllyBuilding", IsEligibleForAllyBuilding);
+    IsAIEngineerCapture = ini.Get_Bool(ini_name, "AIEngineerCapture", IsAIEngineerCapture);
     IsHideDuringSpecialAnim = ArtINI.Get_Bool(ini_name, "HideDuringSpecialAnim", IsHideDuringSpecialAnim);
 
     IsExclusiveFactory = ini.Get_Bool(ini_name, "ExclusiveFactory", IsExclusiveFactory);

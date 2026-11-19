@@ -75,6 +75,9 @@
 #include "weapontypeext.h"
 #include "wwkeyboard.h"
 
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <intrin.h>
 #include <vector>
 
@@ -646,6 +649,17 @@ void TechnoClassExt::_Mission_AI()
     const auto extension = Extension::Fetch(this);
 
     /**
+     *  Aftermath: A computer unit drops a target that took off out of reach of
+     *  its weapons (for example a jumpjet without anti-aircraft weapons) and
+     *  looks for a new one instead of chasing it. Applies with and without the
+     *  Advanced AI.
+     */
+    if (TarCom != nullptr && House != nullptr && !House->Is_Human_Player() && Is_Target_Object(TarCom) &&
+        !Techno_Can_Hit_Target_Height(this, TarCom)) {
+        Assign_Target(nullptr);
+    }
+
+    /**
      *  If the techno was opportunity fire but its mission no longer allows that, stop it.
      */
     if (TarCom != nullptr && extension->HasOpportunityFireTarget) {
@@ -981,8 +995,72 @@ Coord TechnoClassExt::_Fire_Coord(WeaponSlotType which) const
 
 
 /**
+ *  Aftermath: Is the cell a solid flat vein cell, the kind CellClass::Trigger_Veins
+ *  attacks? Same test as the vein path cost in astarext_hooks.cpp.
+ */
+static bool Is_Harmful_Vein_Cell(const CellClass* cell)
+{
+    static constexpr unsigned char FirstSolidVeinData = 48;
+    return cell != nullptr && cell->Overlay == OVERLAY_VEINS && cell->OverlayData >= FirstSolidVeinData && cell->Ramp == RAMP_NONE;
+}
+
+
+/**
+ *  Aftermath: A computer unit attacked by veins leaves them instead of fighting
+ *  the veinhole monster, which sits in the middle of its veins and usually kills
+ *  the unit. The unit keeps its mission; it drops a veinhole target and, unless
+ *  it is already heading for a vein free cell, moves to the closest one.
+ */
+static void Computer_Leave_Veins(FootClass* foot)
+{
+    static constexpr int SearchRadius = 6;
+
+    if (foot->TarCom != nullptr && foot->TarCom->RTTI == RTTI_VEINHOLEMONSTER) {
+        foot->Assign_Target(nullptr);
+    }
+
+    if (foot->NavCom != nullptr) {
+        const CellClass* navcell = &Map[foot->NavCom->Center_Coord()];
+        if (!Is_Harmful_Vein_Cell(navcell)) return;
+    }
+
+    const Cell here = foot->Get_Cell();
+    for (int radius = 1; radius <= SearchRadius; radius++) {
+        const CellClass* best = nullptr;
+        int bestdistance = INT_MAX;
+
+        for (int y = -radius; y <= radius; y++) {
+            for (int x = -radius; x <= radius; x++) {
+                if (std::max(std::abs(x), std::abs(y)) != radius) continue;
+
+                const Cell cell(here.X + x, here.Y + y);
+                if (!Map.In_Radar(cell)) continue;
+
+                const CellClass* cellptr = &Map[cell];
+                if (Is_Harmful_Vein_Cell(cellptr) || cellptr->Overlay == OVERLAY_VEINHOLE) continue;
+                if (foot->Can_Enter_Cell(cellptr) != MOVE_OK) continue;
+
+                const int distance = x * x + y * y;
+                if (distance < bestdistance) {
+                    bestdistance = distance;
+                    best = cellptr;
+                }
+            }
+        }
+
+        if (best != nullptr) {
+            DEV_DEBUG_INFO("AF-0009U: house={} {} leaves veins ({},{})->({},{})\n", (int)foot->House->HeapID,
+                foot->TClass->Name(), here.X, here.Y, best->Fetch_CellID().X, best->Fetch_CellID().Y);
+            foot->Assign_Destination(best);
+            return;
+        }
+    }
+}
+
+
+/**
  *  Checks object to see if it can retaliate.
- *  
+ *
  *  This routine is called when this object has suffered some damage and it needs to know
  *  if it should fight back. The object that caused the damage is specified as a parameter.
  *
@@ -1019,6 +1097,17 @@ bool TechnoClassExt::_Is_Allowed_To_Retaliate(TechnoClass* source, WarheadTypeCl
      */
     if (warhead != nullptr && warhead->IsVeinhole)
     {
+        /**
+         *  Aftermath: Computer ground units leave the veins instead of attacking the
+         *  veinhole monster (also without the Advanced AI; AIVeinPathCost=0 restores
+         *  the native behaviour).
+         */
+        if (!House->Is_Human_Player() && Is_Foot() && RTTI != RTTI_AIRCRAFT &&
+            RuleExtension != nullptr && RuleExtension->AIVeinPathCost > 0.0) {
+            Computer_Leave_Veins(const_cast<FootClass*>(reinterpret_cast<FootClass const*>(this)));
+            return false;
+        }
+
         const bool is_foot_with_nav = Is_Foot() && reinterpret_cast<FootClass const*>(this)->NavCom;
         if (!is_foot_with_nav || !House->Is_Human_Player())
             return true;
@@ -1064,6 +1153,15 @@ bool TechnoClassExt::_Is_Allowed_To_Retaliate(TechnoClass* source, WarheadTypeCl
      *  Don't allow retaliation if it isn't equipped with a weapon that can deal with the threat.
      */
     if (source->RTTI == RTTI_AIRCRAFT && !weapon_info->Weapon->Bullet->IsAntiAircraft) return false;
+
+    /**
+     *  Aftermath: The aircraft check above misses flying jumpjets (infantry or
+     *  units in the air). A computer unit must not retaliate against a source it
+     *  cannot hit at its current height; otherwise every hit from a flying
+     *  jumpjet turned the unit into a chase. Applies with and without the
+     *  Advanced AI, like the other height checks.
+     */
+    if (!House->Is_Human_Player() && !Techno_Can_Hit_Target_Height(this, source)) return false;
 
     /**
      *  Units with C4 are not allowed to retaliate against buildings in the normal sense while in guard mode. That
@@ -2920,6 +3018,54 @@ DEFINE_HOOK(0x00631207, _TechnoClass_Fire_At_TargetLaserTimer_Patch, 0)
 
 
 /**
+ *  Aftermath: Can any weapon of this techno hit the target at its current
+ *  height? A flying jumpjet or aircraft needs an anti-aircraft weapon, a
+ *  landed one an anti-ground weapon. Native Can_Fire refuses the shot the
+ *  same way, but target acquisition did not, so computer units chased flying
+ *  jumpjets they could never hit.
+ */
+bool Techno_Can_Hit_Target_Height(const TechnoClass* techno, const AbstractClass* target)
+{
+    if (techno == nullptr || target == nullptr || !techno->Is_Weapon_Equipped()) {
+        return true;
+    }
+
+    const bool air = target->In_Air();
+    for (WeaponSlotType slot : { WEAPON_SLOT_PRIMARY, WEAPON_SLOT_SECONDARY }) {
+        const WeaponInfoStruct* info = techno->Get_Weapon(slot);
+        const WeaponTypeClass* weapon = info != nullptr ? info->Weapon : nullptr;
+        if (weapon != nullptr && weapon->Bullet != nullptr && (air ? weapon->Bullet->IsAntiAircraft : weapon->Bullet->IsAntiGround)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+/**
+ *  AF-0009U: Has a passive (Neutral/Special) object provoked a computer house?
+ *  True when the object targets something of that house, or when that passive
+ *  house attacked the computer house within the last minute and the object is
+ *  close to the evaluating unit.
+ */
+static bool Is_Provoked_By_Passive_Object(const TechnoClass* techno, const TechnoClass* object)
+{
+    const HouseClass* house = techno->House;
+
+    if (object->TarCom != nullptr && object->TarCom->Owner_HouseClass() == house) {
+        return true;
+    }
+
+    if (house->LAEnemy == object->House->HeapID && house->LATime > 0 && house->LATime + TICKS_PER_MINUTE > Frame) {
+        return techno->Distance_To(object) <= 10 * CELL_LEPTON_W;
+    }
+
+    return false;
+}
+
+
+/**
  *  #issue-1161
  *
  *  Helper function. Checks whether a target is valid considering zone evaluation.
@@ -3197,6 +3343,24 @@ bool TechnoClassExt::_Evaluate_Object(ThreatType method, int mask, int range, Te
     }
 
     if (Session.Type != GAME_NORMAL && object->House->Class->IsMultiplayPassive && object->PrimaryWeapon == nullptr) {
+        return false;
+    }
+
+    /**
+     *  AF-0009U: Computer houses only fight armed passive (Neutral/Special) objects
+     *  in self defense, instead of hunting them across the map.
+     */
+    if (Session.Type != GAME_NORMAL && object->House->Class->IsMultiplayPassive && !House->Is_Human_Player() &&
+        !Is_Provoked_By_Passive_Object(this, object)) {
+        return false;
+    }
+
+    /**
+     *  Aftermath: Computer units don't acquire targets they cannot hit at their
+     *  current height, such as flying jumpjets without an anti-aircraft weapon.
+     *  Applies with and without the Advanced AI.
+     */
+    if (!House->Is_Human_Player() && !Techno_Can_Hit_Target_Height(this, object)) {
         return false;
     }
 

@@ -68,6 +68,7 @@ public:
     int _AI_Building();
     int _AI_Unit();
     int _Expert_AI();
+    void _AI_Advanced_Super_Weapons();
     void _Active_Remove(TechnoClass const* techno);
     void _Active_Add(TechnoClass const* techno);
     Cell _Find_Build_Location(BuildingTypeClass* btype, int(__fastcall* callback)(int, Cell&, int, int), int a3 = -1);
@@ -290,6 +291,69 @@ int HouseClassExt::_AI_Unit()
 
 
 /**
+ *  AF-0009: Fires ready super weapons at a valid enemy. The native launchers
+ *  read Enemy; a passive (Neutral/Special), allied, defeated or observer house
+ *  as enemy, or none at all, is replaced by the angriest or closest valid
+ *  enemy for this call only. Ported from the original Aftermath checkout.
+ */
+void HouseClassExt::_AI_Advanced_Super_Weapons()
+{
+    const auto valid_enemy = [this](const HouseClass* house) {
+        if (!house || house == this || house->IsDefeated || Is_Ally(house) ||
+            !house->Class || house->Class->IsMultiplayPassive) return false;
+        const auto* extension = Extension::Fetch(house);
+        return extension && !extension->IsObserver;
+    };
+    if (Enemy != HOUSE_NONE && valid_enemy(Houses[Enemy])) {
+        AI_Super_Weapons();
+        return;
+    }
+
+    const auto ready_weapons = [this]() {
+        int count = 0;
+        for (const SuperClass* weapon : SuperWeapon) count += weapon && weapon->Is_Ready();
+        return count;
+    };
+    const int ready_before = ready_weapons();
+    if (ready_before == 0) return;
+
+    const HouseClass* replacement = nullptr;
+    int highest_anger = 0;
+    for (const auto& node : AngerNodes) {
+        if (node.Level > highest_anger && valid_enemy(node.Whom)) {
+            highest_anger = node.Level;
+            replacement = node.Whom;
+        }
+    }
+    if (!replacement) {
+        int closest = INT_MAX;
+        for (const HouseClass* house : Houses) {
+            if (!valid_enemy(house)) continue;
+            const int distance = Center != COORD_NONE && house->Center != COORD_NONE ? Distance(Center, house->Center) : INT_MAX;
+            if (!replacement || distance < closest) {
+                closest = distance;
+                replacement = house;
+            }
+        }
+    }
+    if (!replacement) return;
+
+    // Keep the substitution local to the launcher call so team targeting and
+    // the house's anger state keep their own rules.
+    const auto original_enemy = Enemy;
+    Enemy = replacement->HeapID;
+    AI_Super_Weapons();
+    Enemy = original_enemy;
+
+    const int used = ready_before - ready_weapons();
+    if (used > 0) {
+        DEV_DEBUG_INFO("AF-0009-SW: house={} frame={} previous-enemy={} selected-enemy={} discharged={}\n",
+            static_cast<int>(HeapID), Frame, static_cast<int>(original_enemy), static_cast<int>(replacement->HeapID), used);
+    }
+}
+
+
+/**
  *  Handles expert AI processing.
  *
  *  @author: 09/29/1995 JLB - Created.
@@ -298,6 +362,12 @@ int HouseClassExt::_AI_Unit()
 int HouseClassExt::_Expert_AI()
 {
     const auto houseext = Extension::Fetch(this);
+
+    /**
+     *  AF-0009U: Advanced AI team recruitment, tactics and self defense.
+     */
+    houseext->AdvAI_Expert_AI();
+
     /**
      *  If there is no enemy assigned to this house, then assign one now. The
      *  enemy that is closest is picked. However, don't pick an enemy if the
@@ -359,7 +429,11 @@ int HouseClassExt::_Expert_AI()
      *  Use any ready super weapons.
      */
     if (Session.Type != GAME_NORMAL || IQ >= Rule->IQSuperWeapons) {
-        AI_Super_Weapons();
+        if (houseext->Is_Advanced_AI_Enabled() && !houseext->IsObserver) {
+            _AI_Advanced_Super_Weapons();
+        } else {
+            AI_Super_Weapons();
+        }
     }
 
     /**
@@ -2141,12 +2215,62 @@ DEFINE_HOOK(0x004BC9D4, _HouseClass_AI_Team_Production, 0)
         return 0x004BCAA0;
     }
 
+    /**
+     *  AF-0009U: The Advanced AI builds its teams from tactics, so skip the
+     *  native TeamDelay AI team creation for it. Scripted team creation and
+     *  reinforcements use other paths and remain unaffected.
+     */
+    if (Extension::Fetch(this_ptr)->Is_Advanced_AI_Unit_Production()) {
+        return 0x004BCAA0;
+    }
+
     // Stolen bytes / code.
     if (this_ptr->TeamTime.Expired()) {
         return 0x004BC9FD;
     }
 
     return 0x004BCAA0;
+}
+
+
+/**
+ *  AF-0009U: Routes HouseClass::AI_Infantry to the Advanced AI production
+ *  when it is in charge of the house. Otherwise the native function runs
+ *  unchanged (the stolen SUB ESP, 0x2F0C is replayed by the hook).
+ *  0x004C1A23 is the RETN that ends the preceding function; at entry it
+ *  returns straight to the caller with EAX as the next delay.
+ */
+DEFINE_HOOK(0x004C1A30, _HouseClass_AI_Infantry_AdvancedAI, 6)
+{
+    GET(HouseClass*, this_ptr, ECX);
+
+    HouseClassExtension* houseext = Extension::Fetch(this_ptr);
+    if (!houseext->Is_Advanced_AI_Unit_Production()) {
+        return 0;
+    }
+
+    R->EAX(houseext->AdvAI_AI_Infantry());
+    return 0x004C1A23;
+}
+
+
+/**
+ *  AF-0009U: Routes HouseClass::AI_Aircraft to the Advanced AI production
+ *  when it is in charge of the house. Otherwise the native function runs
+ *  unchanged (the stolen SUB ESP, 0x4DC is replayed by the hook).
+ *  0x004C1D3B is the RETN that ends AI_Infantry.
+ */
+DEFINE_HOOK(0x004C1D40, _HouseClass_AI_Aircraft_AdvancedAI, 6)
+{
+    GET(HouseClass*, this_ptr, ECX);
+
+    HouseClassExtension* houseext = Extension::Fetch(this_ptr);
+    if (!houseext->Is_Advanced_AI_Unit_Production()) {
+        return 0;
+    }
+
+    R->EAX(houseext->AdvAI_AI_Aircraft());
+    return 0x004C1D3B;
 }
 
 

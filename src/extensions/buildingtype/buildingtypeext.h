@@ -166,6 +166,12 @@ public:
     int EngineerChance;
 
     /**
+     *  AF-0009U: The Advanced AI sends an engineer to capture this building
+     *  (needs Capturable=yes), like it does with oil derricks.
+     */
+    bool IsAIEngineerCapture;
+
+    /**
      *  Should the building hide its main shape during the special anims?
      *  Usually used for missile silos so that anims that don't completely
      *  hide the main shape don't look glitched.

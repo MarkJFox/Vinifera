@@ -25,6 +25,7 @@
 #include "mouse.h"
 #include "overlaytype.h"
 #include "rules.h"
+#include "rulesext.h"
 #include "tiberium.h"
 #include "tibsun_globals.h"
 #include "tibsun_inline.h"
@@ -49,6 +50,16 @@
 
 namespace
 {
+    /**
+     *  AF-0009U: Credits required before a resource expansion refinery starts.
+     *  Like DTA, the refinery starts as soon as its cost is covered (previously
+     *  twice the cost); the unit start reserve then protects it until it is paid.
+     */
+    long long Expansion_Refinery_Minimum(long long cost)
+    {
+        return cost;
+    }
+
     constexpr int AnalysisInterval = 30 * TICKS_PER_SECOND;
     constexpr int TechnologyInterval = 2 * TICKS_PER_SECOND;
     constexpr int RefineryServiceRadius = 12;
@@ -80,6 +91,24 @@ namespace
     constexpr int LocalStockRadius = 8;
     constexpr int MaximumPlacementAnchors = 1024;
     constexpr int PlacementProbes = 4;
+
+    /**
+     *  AF-0009U: Spreading of defenses that are placed without a threat.
+     *  A building counts as covered by own defenses within SpreadCoverRadius
+     *  cells; defenses within SpreadCrowdRadius cells of a site crowd it.
+     */
+    constexpr int SpreadCoverRadius = 6;
+    constexpr int SpreadCrowdRadius = 4;
+    constexpr int SpreadAssetAims = 4;
+
+    int Spread_Asset_Importance(const BuildingTypeClass* type)
+    {
+        // Not IsBase (BaseNormal): it is set for almost every building.
+        if (type->IsConstructionYard || type->IsRefinery) return 2;
+        if (type->ToBuild != RTTI_NONE || type->Power > type->Drain || type->IsRadar ||
+            Rule->BuildTech.Is_Present(BuildingTypes[type->HeapID])) return 1;
+        return 0;
+    }
     constexpr int PlacementTargets = 5;
     constexpr int RefineryPlacementOptions = 2;
     constexpr size_t CorridorSeedLimit = 16;
@@ -159,10 +188,59 @@ namespace
         bool AdvancesRefineryFrontier = false;
         int FailedCorridorField = -1;
         const char* FailedCorridorReason = nullptr;
+        bool Creep = false;
     };
 
     // The existing factory exit calls the placement adapter synchronously.
     PlacementRequest ActivePlacement;
+
+    /**
+     *  AF-0009U: DTA-like base creep towards a resource field whose refinery
+     *  site cannot be verified (outside the build range, no corridor step).
+     *  Ordinary steps (power plants) are placed as close to the field as the
+     *  build range allows; once the base cannot get closer, or is close
+     *  enough, the refinery is placed as close to the field as possible.
+     */
+    struct ExpansionCreep
+    {
+        Cell Target = NoExpansionCell;
+        StructType Type = STRUCT_NONE;
+        Cell Site = NoExpansionCell;
+        bool Refinery = false;
+        int Steps = 0;
+        long LastProbe = -1;
+        bool FullProbe = false;
+        const char* Reason = nullptr;
+    };
+    std::map<int, ExpansionCreep> ExpansionCreeps;
+
+    /**
+     *  AF-0009U: Creep steps whose loss is watched. A target where creep
+     *  steps were destroyed repeatedly is blocked for a while, so the house
+     *  does not keep feeding power plants into an enemy kill zone.
+     */
+    struct CreepStepRecord
+    {
+        int BuildingID = -1;
+        Cell Target = NoExpansionCell;
+        long Frame = 0;
+    };
+    struct CreepTargetBlock
+    {
+        Cell Target = NoExpansionCell;
+        int Losses = 0;
+        long Since = 0;
+        long Until = -1;
+    };
+    constexpr int CreepLossLimit = 2;
+    constexpr int CreepBlockRadius = 6;
+    constexpr long CreepBlockDuration = 5 * 60 * TICKS_PER_SECOND;
+    // No creep to a field with enemy buildings this close, no step this close to one.
+    constexpr int CreepEnemyTargetRadius = 12;
+    constexpr int CreepEnemySiteRadius = 8;
+    std::map<int, std::vector<CreepStepRecord>> CreepSteps;
+    std::map<int, std::vector<CreepTargetBlock>> CreepBlocks;
+    std::map<int, Cell> CreepRejectedTargets;
 
     bool Due(long previous, int interval = AnalysisInterval)
     {
@@ -1840,6 +1918,10 @@ void HouseClassExtension::Clear_Advanced_AI_Resource_State()
     ResourceZones.clear();
     HouseAnalyses.clear();
     ExpansionPlans.clear();
+    ExpansionCreeps.clear();
+    CreepSteps.clear();
+    CreepBlocks.clear();
+    CreepRejectedTargets.clear();
     RefineryTraces.clear();
     ActivePlacement = PlacementRequest{};
 }
@@ -1859,6 +1941,325 @@ const AdvancedAIResourceAnalysis* HouseClassExtension::Get_Advanced_AI_Resource_
     if (!Is_Advanced_AI_Enabled()) return nullptr;
     const auto found = HouseAnalyses.find(static_cast<int>(This_Const()->HeapID));
     return found != HouseAnalyses.end() ? &found->second : nullptr;
+}
+
+/**
+ *  AF-0009U: Has the expansion planner found a placeable site for its next
+ *  expansion step (an order with a site, or a verified site waiting for
+ *  credits)? A target outside the build range has none; saving for it would
+ *  only hoard credits.
+ */
+/**
+ *  AF-0009U: Placement rule for the base creep.
+ *
+ *  The native AI only builds within 2 height levels of its base center
+ *  (HouseClass::Find_Build_Location); human players are not limited that way.
+ *  A creep step may use the player rules instead (legal footprint, next to own
+ *  buildings via HouseClass::Can_Build_Here), so the base can grow over a cliff,
+ *  as long as the site stays reachable on the ground:
+ *
+ *  - a refinery's dock approach cell must be in the field's ground zone
+ *    (also on the base level; harvesters must reach the dock),
+ *  - another building on a different level needs a neighbouring cell in the
+ *    base's ground zone.
+ */
+static bool Creep_Site_Allowed(HouseClass* house, BuildingTypeClass* type, const Cell& site, bool refinery,
+    int base_zone, int field_zone)
+{
+    Cell placement = site; // Legal_Placement takes a non-const reference.
+    if (!type->Legal_Placement(placement, house)) return false;
+
+    if (refinery) {
+        const int zone = Ground_Zone(Playable_Cell(site + Refinery_Approach_Offset(type->Width(), type->Height())));
+        const int wanted = field_zone >= 0 ? field_zone : base_zone;
+        if (zone < 0 || (wanted >= 0 && zone != wanted)) return false;
+    }
+
+    if (In_Native_AI_Build_Range(house, type, site)) return true;
+
+    // Another level: the player proximity rule without the native AI height limit.
+    using CanBuildHere = bool(__thiscall*)(const HouseClass*, const BuildingTypeClass*, const Cell&);
+    if (!reinterpret_cast<CanBuildHere>(0x004CB9C0)(house, type, site)) return false;
+    if (refinery) return true;
+
+    if (base_zone < 0) return false;
+    const int width = type->Width();
+    const int height = type->Height();
+    for (int y = site.Y - 1; y <= site.Y + height; ++y) {
+        for (int x = site.X - 1; x <= site.X + width; ++x) {
+            if (x >= site.X && x < site.X + width && y >= site.Y && y < site.Y + height) continue;
+            if (Ground_Zone(Playable_Cell(Cell(static_cast<short>(x), static_cast<short>(y)))) == base_zone) return true;
+        }
+    }
+    return false;
+}
+
+
+bool HouseClassExtension::Has_Advanced_AI_Expansion_Site() const
+{
+    const int id = static_cast<int>(This_Const()->HeapID);
+    if (const auto creep = ExpansionCreeps.find(id); creep != ExpansionCreeps.end() &&
+        creep->second.Target != NoExpansionCell && creep->second.Site != NoExpansionCell) return true;
+    const auto found = ExpansionPlans.find(id);
+    if (found == ExpansionPlans.end()) return false;
+    const auto& plan = found->second;
+    return (plan.Type != STRUCT_NONE && plan.Site != NoExpansionCell) ||
+        (plan.FollowupTarget != NoExpansionCell && plan.FollowupSiteVerified);
+}
+
+
+/**
+ *  AF-0009U: Best of both worlds. The AF-0009 planner first looks for a verified
+ *  refinery site (service radius, harvester route, corridor). When it finds none
+ *  for the field it wants, the base grows towards that field like DTA does:
+ *
+ *  - Power plants are placed as close to the field as the build range allows.
+ *  - The refinery follows when its closest legal site is near the field
+ *    (CloseEnough), when no power plant site gets the base any closer, or
+ *    after MaxSteps steps. It is then placed as close to the field as possible,
+ *    without the AF-0009 route checks.
+ *
+ *  refinery_only: only return a refinery step (checked before the B2
+ *  development); otherwise power steps are allowed too (after B2).
+ */
+const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Expansion_Creep(bool refinery_only, const char*& reason)
+{
+    static constexpr int ProbeInterval = 15 * TICKS_PER_SECOND;
+    static constexpr int CloseEnough = 6;
+    static constexpr int MaxSteps = 10;
+    static constexpr int SearchMargin = 10;
+
+    HouseClass* house = This();
+    const int id = static_cast<int>(house->HeapID);
+    auto& creep = ExpansionCreeps[id];
+    const auto stop = [&](const char* why) -> const BuildingTypeClass* {
+        if (creep.Target != NoExpansionCell) {
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep stopped target={},{} steps={} reason={}\n",
+                id, Frame, creep.Target.X, creep.Target.Y, creep.Steps, why);
+        }
+        creep = {};
+        return nullptr;
+    };
+
+    /**
+     *  AF-0009U: Count destroyed creep steps per target. LossLimit losses near
+     *  one target block it for BlockDuration frames. Steps that survived
+     *  BlockDuration are no longer watched.
+     */
+    const auto near_cell = [](const Cell& a, const Cell& b, int radius) {
+        return std::abs(a.X - b.X) <= radius && std::abs(a.Y - b.Y) <= radius;
+    };
+    auto& blocks = CreepBlocks[id];
+    blocks.erase(std::remove_if(blocks.begin(), blocks.end(), [](const CreepTargetBlock& block) {
+        return block.Until >= 0 ? Frame >= block.Until : Frame - block.Since >= CreepBlockDuration;
+    }), blocks.end());
+    auto& steps = CreepSteps[id];
+    for (auto it = steps.begin(); it != steps.end();) {
+        bool alive = false;
+        for (const BuildingClass* building : Buildings) {
+            if (building && building->ID == it->BuildingID) {
+                alive = Existing_Building(building) && building->House == house;
+                break;
+            }
+        }
+        if (alive) {
+            it = Frame - it->Frame >= CreepBlockDuration ? steps.erase(it) : it + 1;
+            continue;
+        }
+        auto block = std::find_if(blocks.begin(), blocks.end(), [&](const CreepTargetBlock& entry) {
+            return near_cell(entry.Target, it->Target, CreepBlockRadius);
+        });
+        if (block == blocks.end()) {
+            blocks.push_back({it->Target, 0, static_cast<long>(Frame), -1});
+            block = blocks.end() - 1;
+        }
+        ++block->Losses;
+        if (block->Losses >= CreepLossLimit && block->Until < 0) {
+            block->Until = Frame + CreepBlockDuration;
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep target-blocked target={},{} losses={} until={}\n",
+                id, Frame, block->Target.X, block->Target.Y, block->Losses, block->Until);
+        }
+        it = steps.erase(it);
+    }
+
+    if (IsObserver || house->ConstructionYards.Count() <= 0) return stop("no-construction-yard");
+    /**
+     *  AF-0009U: Besides the factory-based shortfall (two refineries per war
+     *  factory), creep while the house has fewer refineries than three or than
+     *  its enemy. A house with one war factory stopped at two refineries even
+     *  when every field it could reach directly was rejected.
+     */
+    if (Advanced_AI_Refinery_Shortfall(true) <= 0) {
+        int refineries = 0;
+        for (const BuildingClass* building : Buildings) {
+            if (Existing_Building(building) && building->House == house && building->Class->IsRefinery) ++refineries;
+        }
+        if (refineries >= std::max(3, EnemyRefineryCount)) return stop("no-refinery-shortfall");
+    }
+
+    const auto found = ExpansionPlans.find(id);
+    if (found == ExpansionPlans.end()) return stop("no-expansion-plan");
+    auto& plan = found->second;
+    if (plan.Type != STRUCT_NONE) return stop("expansion-order-in-progress");
+    if (plan.FollowupTarget != NoExpansionCell && plan.FollowupSiteVerified) return stop("verified-site");
+
+    const Cell target = plan.Target != NoExpansionCell ? plan.Target :
+        plan.DeferredTarget != NoExpansionCell ? plan.DeferredTarget : plan.FollowupTarget;
+    if (target == NoExpansionCell || !Playable_Cell(target)) return stop("no-target");
+
+    /**
+     *  AF-0009U: No creep towards a field next to an enemy base or towards a
+     *  target blocked after lost steps. Logged once per rejected target.
+     *  The field is deferred like a failed corridor field, so the planner
+     *  turns to another field instead of holding the refinery reserve for one
+     *  it will never reach.
+     */
+    std::vector<const BuildingClass*> enemy_buildings;
+    for (const BuildingClass* building : Buildings) {
+        if (!Existing_Building(building) || building->House == nullptr || building->Class->IsWall ||
+            house->Is_Ally(building->House) || building->House->Class->IsMultiplayPassive) continue;
+        enemy_buildings.push_back(building);
+    }
+    const auto near_enemy = [&](const Cell& cell, int radius) {
+        for (const BuildingClass* building : enemy_buildings) {
+            if (Distance_To_Footprint(cell, building->Get_Cell(), building->Class) <= radius) return true;
+        }
+        return false;
+    };
+    const auto reject = [&](const char* why) -> const BuildingTypeClass* {
+        auto& rejected = CreepRejectedTargets[id];
+        if (rejected != target) {
+            rejected = target;
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep rejected target={},{} reason={}\n",
+                id, Frame, target.X, target.Y, why);
+        }
+        if (const int field = Survey_Field_ID(target); field >= 0) Defer_Corridor_Field(house, plan, field, target, why);
+        // Defer_Corridor_Field clears Target and FollowupTarget only. A target taken from
+        // DeferredTarget was rejected again on every pass (log 19.11.2026 10-05-25).
+        if (plan.DeferredTarget == target) plan.DeferredTarget = NoExpansionCell;
+        return stop(why);
+    };
+    for (const auto& block : blocks) {
+        if (block.Until >= 0 && near_cell(block.Target, target, CreepBlockRadius)) return reject("target-blocked-after-losses");
+    }
+    if (near_enemy(target, CreepEnemyTargetRadius)) return reject("enemy-base-near-target");
+
+    // Harvesters must be able to drive from the base to the field. Checked before
+    // the creep starts, so an unreachable field neither starts nor logs a creep.
+    const int base_zone = Ground_Zone(Playable_Cell(house->Base.PlacementCenter));
+    const int field_zone = Ground_Zone(Playable_Cell(target));
+    if (base_zone >= 0 && field_zone >= 0 && base_zone != field_zone) return stop("field-in-other-zone");
+
+    BuildingTypeClass* refinery = nullptr;
+    for (BuildingTypeClass* candidate : Rule->BuildRefinery) {
+        if (candidate && Resource_Placement_Role(candidate) == PlacementRole::Refinery && Can_Advanced_AI_Build_Building(candidate) &&
+            Can_Supply_Refinery(house, candidate)) {
+            refinery = candidate;
+            break;
+        }
+    }
+    if (!refinery) return stop("no-buildable-refinery");
+
+    if (creep.Target != target) {
+        if (creep.Target != NoExpansionCell) stop("target-changed");
+        creep.Target = target;
+        DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep started target={},{}\n", id, Frame, target.X, target.Y);
+    }
+    auto* power = const_cast<BuildingTypeClass*>(Select_Advanced_AI_Power_Plant());
+
+    /**
+     *  AF-0009U: With more spare power than the plant would add, a creep step
+     *  only has to extend the base, so the cheapest standalone power plant is used.
+     */
+    if (power) {
+        const long long available = static_cast<long long>(house->Power) - house->Drain - house->PowerSurplus;
+        if (available >= static_cast<long long>(power->Power) - power->Drain) {
+            for (BuildingTypeClass* candidate : BuildingTypes) {
+                if (!candidate || !candidate->PowersUpBuilding.empty() || candidate->Power <= candidate->Drain ||
+                    !candidate->IsBase || Extension::Fetch(candidate)->IsNaval || !Can_Advanced_AI_Build_Building(candidate)) continue;
+                if (candidate->Cost_Of(house) < power->Cost_Of(house)) power = candidate;
+            }
+        }
+    }
+
+    // Re-evaluate the sites at most every ProbeInterval frames.
+    if (creep.LastProbe < 0 || Frame - creep.LastProbe >= ProbeInterval || (!refinery_only && !creep.FullProbe)) {
+        creep.LastProbe = Frame;
+        creep.FullProbe = !refinery_only;
+        creep.Type = STRUCT_NONE;
+        creep.Site = NoExpansionCell;
+        creep.Refinery = false;
+
+        // How close does the base already get?
+        int edge = std::numeric_limits<int>::max();
+        for (const BuildingClass* building : Buildings) {
+            if (!Existing_Building(building) || building->House != house || !building->Class->IsBase ||
+                Defensive_Building(building->Class) || building->Class->IsWall) continue;
+            edge = std::min(edge, Distance_To_Footprint(target, building->Get_Cell(), building->Class));
+        }
+
+        Rect area = Base_Footprint_Rect(house);
+        area.X -= SearchMargin;
+        area.Y -= SearchMargin;
+        area.Width += 2 * SearchMargin;
+        area.Height += 2 * SearchMargin;
+        const auto closest_site = [&](BuildingTypeClass* type, bool is_refinery, int& distance) {
+            Cell best = NoExpansionCell;
+            distance = std::numeric_limits<int>::max();
+            if (!type) return best;
+            for (int y = area.Y; y < area.Y + area.Height; ++y) {
+                for (int x = area.X; x < area.X + area.Width; ++x) {
+                    const Cell site(static_cast<short>(x), static_cast<short>(y));
+                    if (!Playable_Cell(site)) continue;
+                    const int d = Distance_To_Footprint(target, site, type);
+                    if (d >= distance) continue;
+                    if (near_enemy(site, CreepEnemySiteRadius)) continue;
+                    if (!Creep_Site_Allowed(house, type, site, is_refinery, base_zone, field_zone)) continue;
+                    distance = d;
+                    best = site;
+                }
+            }
+            return best;
+        };
+
+        int refinery_distance = 0;
+        const Cell refinery_site = closest_site(refinery, true, refinery_distance);
+        int power_distance = 0;
+        const Cell power_site = refinery_only ? NoExpansionCell : closest_site(power, false, power_distance);
+
+        const bool close_enough = refinery_site != NoExpansionCell && refinery_distance <= CloseEnough;
+        const bool stalled = !refinery_only && (power_site == NoExpansionCell || power_distance >= edge);
+        if (refinery_site != NoExpansionCell && (close_enough || stalled || creep.Steps >= MaxSteps)) {
+            creep.Type = refinery->HeapID;
+            creep.Site = refinery_site;
+            creep.Refinery = true;
+            creep.Reason = close_enough ? "expansion-creep-refinery" : creep.Steps >= MaxSteps ? "expansion-creep-refinery-step-limit" :
+                "expansion-creep-refinery-closest";
+        } else if (!refinery_only && power_site != NoExpansionCell && power_distance < edge) {
+            creep.Type = power->HeapID;
+            creep.Site = power_site;
+            creep.Reason = "expansion-creep-step";
+        }
+        DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep probe target={},{} edge={} refinery-site={},{} refinery-distance={} "
+            "power-site={},{} power-distance={} steps={} choice={}\n", id, Frame, target.X, target.Y, edge,
+            refinery_site.X, refinery_site.Y, refinery_site != NoExpansionCell ? refinery_distance : -1,
+            power_site.X, power_site.Y, power_site != NoExpansionCell ? power_distance : -1, creep.Steps,
+            creep.Type != STRUCT_NONE ? BuildingTypes[creep.Type]->Name() : "none");
+    }
+
+    if (creep.Type == STRUCT_NONE || creep.Site == NoExpansionCell) return nullptr;
+    if (refinery_only && !creep.Refinery) return nullptr;
+
+    BuildingTypeClass* type = BuildingTypes[creep.Type];
+    const long long cost = type->Cost_Of(house);
+    if (cost < 0) return nullptr;
+    if (Advanced_AI_Uncommitted_Funds() < cost) {
+        Request_Advanced_AI_Savings(cost, "expansion-creep", true);
+        return nullptr;
+    }
+    if (creep.Refinery) Request_Advanced_AI_Savings(cost, "expansion-creep", true);
+    reason = creep.Reason;
+    return type;
 }
 
 Cell HouseClassExtension::Advanced_AI_Expansion_Target() const
@@ -2086,7 +2487,8 @@ namespace
             // chosen by the building planner. Only the refinery needs to earn back its cost.
             const long long minimum_stock = cost;
             bool shared = relaxed && stock.ServingRefineries > 0 && stock.Uncovered < minimum_stock;
-            const long long reserve_with_cost = cost + (infrastructure ? step_cost : cost);
+            // AF-0009U: Start once the refinery cost is covered (DTA-like), see Expansion_Refinery_Minimum.
+            const long long reserve_with_cost = infrastructure ? cost + step_cost : Expansion_Refinery_Minimum(cost);
             long long minimum_funds = std::max(11LL, reserve_with_cost);
             const BuildingTypeClass* power = nullptr;
             const char* reason = nullptr;
@@ -2100,6 +2502,8 @@ namespace
             else if (funds < minimum_funds || uncommitted < minimum_funds) {
                 budget_wait = true;
                 waiting = reason = funds < minimum_funds ? "insufficient-credits" : "production-commitments";
+                // AF-0009U: Unit starts keep the expansion budget free.
+                extension.Request_Advanced_AI_Savings(minimum_funds, "expansion-refinery", true);
             } else if (!infrastructure && !extension.Has_Advanced_AI_Power_For(refinery)) {
                 power = extension.Prioritize_Advanced_AI_Power(refinery);
                 if (!power || power == refinery) waiting = reason = "insufficient-power";
@@ -2110,6 +2514,7 @@ namespace
                     else if (uncommitted < minimum_funds) {
                         budget_wait = true;
                         waiting = reason = "insufficient-funds-for-power-and-refinery";
+                        extension.Request_Advanced_AI_Savings(minimum_funds, "expansion-power-and-refinery", true);
                     }
                 }
             }
@@ -2134,6 +2539,8 @@ namespace
             }
 
             extension.Trace_Advanced_AI_Production("expansion-budget", reason ? reason : "budget-passed", refinery, minimum_funds);
+            // AF-0009U: Keep the expansion budget reserved until the refinery actually starts.
+            if (!infrastructure) extension.Request_Advanced_AI_Savings(minimum_funds, "expansion-refinery", true);
             BuildingTypeClass* type = infrastructure ? BuildingTypes[infrastructure->HeapID] : refinery;
             const auto role = Resource_Placement_Role(type);
             const Cell preferred = !infrastructure && plan.FollowupTarget == target && plan.FollowupRefinery == refinery->HeapID
@@ -2380,7 +2787,11 @@ const BuildingTypeClass* HouseClassExtension::Resume_Advanced_AI_Refinery(const 
     }
     plan.DevelopmentOrder = attempt.Choice->HeapID;
     plan.DevelopmentIsTechnology = false;
-    if (!goal.Type) plan.DevelopmentMinimum = 2LL * desired->Cost_Of(This());
+    // AF-0009U: The refinery floor of the expansion budget, plus a power step bought first.
+    if (!goal.Type) {
+        plan.DevelopmentMinimum = Expansion_Refinery_Minimum(desired->Cost_Of(This())) +
+            (attempt.Choice != desired ? attempt.Choice->Cost_Of(This()) : 0);
+    }
     return attempt.Choice;
 }
 
@@ -2553,6 +2964,7 @@ const BuildingTypeClass* HouseClassExtension::Plan_Advanced_AI_Development(const
         return nullptr;
     }
     if (!choice && !review_development && !review_technology) return nullptr;
+
     if (choice) {
         need = choice->IsRefinery ? "resource-expansion" : "power-for-refinery";
         DEV_DEBUG_INFO("AF-0009C3a: house={} frame={} decision=resource-expansion-preferred order={} target={},{}\n",
@@ -2584,7 +2996,8 @@ const BuildingTypeClass* HouseClassExtension::Plan_Advanced_AI_Development(const
     }
     if (choice) {
         plan.DevelopmentOrder = choice->HeapID;
-        if (choice->IsRefinery) plan.DevelopmentMinimum = 2LL * choice->Cost_Of(house);
+        // AF-0009U: The refinery cost instead of twice the cost, see the expansion budget.
+        if (choice->IsRefinery) plan.DevelopmentMinimum = Expansion_Refinery_Minimum(choice->Cost_Of(house));
         else plan.DevelopmentMinimum = std::max(plan.DevelopmentMinimum,
             static_cast<long long>(choice->Cost_Of(house)) + Advanced_AI_Refinery_Reserve());
     }
@@ -2658,8 +3071,9 @@ const char* HouseClassExtension::Validate_Advanced_AI_Expansion_Start(const Buil
     HouseClass* house = This();
     if (type->IsWall && type->ToOverlay && type->ToOverlay->IsWall &&
         Find_Advanced_AI_Yard_Wall_Site(type) == NoExpansionCell) return "no-legal-yard-wall-site";
+    // Emergency defenses use the reduced threat reserve, matching the planner's selection.
     if (Is_Advanced_AI_Defense_Type(type) &&
-        Advanced_AI_Uncommitted_Funds() < Advanced_AI_Refinery_Reserve() + type->Cost_Of(house)) return "defense-budget";
+        Advanced_AI_Uncommitted_Funds() < Advanced_AI_Defense_Start_Reserve(type) + type->Cost_Of(house)) return "defense-budget";
     const auto found = ExpansionPlans.find(static_cast<int>(house->HeapID));
     if (found == ExpansionPlans.end()) return nullptr;
     auto& plan = found->second;
@@ -2686,7 +3100,9 @@ const char* HouseClassExtension::Validate_Advanced_AI_Expansion_Start(const Buil
     if (plan.Type != type->HeapID || plan.ProductID >= 0) return nullptr;
     const auto stock = Read_Expansion_Stock(house, plan.Target, plan.AllowLongRoute);
     const int cost = type->Cost_Of(house);
-    const long long refinery_minimum = 2LL * cost;
+    // AF-0009U: Same floor as the expansion budget (Expansion_Refinery_Minimum).
+    // Twice the cost here never started a refinery the budget had released.
+    const long long refinery_minimum = Expansion_Refinery_Minimum(cost);
     // A passed reserve check already implies the cash floor when it covers
     // today's cost. Keep the cash check for an untracked or repriced order.
     const bool reserve_covers_cost = development && plan.DevelopmentMinimum >= refinery_minimum;
@@ -2728,7 +3144,7 @@ const char* HouseClassExtension::Validate_Advanced_AI_Expansion_Start(const Buil
     }
 
     const bool extra = plan.ExtraRefinery;
-    Trace_Advanced_AI_Production("expansion-start", search.Reason, type, extra ? std::max(11LL, 2LL * cost) : 11);
+    Trace_Advanced_AI_Production("expansion-start", search.Reason, type, extra ? std::max(11LL, refinery_minimum) : 11);
     if (extra && plan.DevelopmentOrder == plan.Type) plan.DevelopmentOrder = STRUCT_NONE;
     if (search.Corridor) {
         Defer_Corridor_Field(house, plan, field, plan.Target, search.Reason);
@@ -2744,6 +3160,12 @@ bool HouseClassExtension::Report_Advanced_AI_Expansion_Start(const BuildingTypeC
 {
     Report_Advanced_AI_Power_Start(type, factory);
     HouseClass* house = This();
+
+    // AF-0009U: The refinery is paid from here on; release the expansion savings.
+    if (type->IsRefinery && factory && factory->Get_Object()) {
+        Clear_Advanced_AI_Economy_Savings();
+    }
+
     const auto found = ExpansionPlans.find(static_cast<int>(house->HeapID));
     if (found == ExpansionPlans.end()) return false;
     auto& plan = found->second;
@@ -2791,6 +3213,24 @@ Cell HouseClassExtension::Find_Advanced_AI_Expansion_Placement(BuildingTypeClass
     }
     if (ActivePlacement.Searched) return ActivePlacement.Site;
     ActivePlacement.Searched = true;
+
+    // AF-0009U: A base creep step goes to its precomputed site, closest to the field.
+    if (const auto creep = ExpansionCreeps.find(ActivePlacement.House); creep != ExpansionCreeps.end() &&
+        creep->second.Type == type->HeapID && creep->second.Site != NoExpansionCell) {
+        const Cell site = creep->second.Site;
+        const int base_zone = Ground_Zone(Playable_Cell(house->Base.PlacementCenter));
+        const int field_zone = Ground_Zone(Playable_Cell(creep->second.Target));
+        if (Creep_Site_Allowed(house, type, site, type->IsRefinery, base_zone, field_zone)) {
+            ActivePlacement.Target = creep->second.Target;
+            ActivePlacement.Site = site;
+            ActivePlacement.Creep = true;
+            return site;
+        }
+        // The site was taken meanwhile; probe again on the next planner pass.
+        creep->second.Site = NoExpansionCell;
+        creep->second.LastProbe = -1;
+    }
+
     const auto found = ExpansionPlans.find(ActivePlacement.House);
     if (found == ExpansionPlans.end()) return NoExpansionCell;
     const auto& plan = found->second;
@@ -3082,6 +3522,7 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
     };
     Cell enemy = NoExpansionCell;
     auto enemy_rank = std::make_tuple(2, std::numeric_limits<int>::max(), std::numeric_limits<int>::max());
+    const auto enemy_unit_near = [&]() { return enemy != NoExpansionCell && std::get<0>(enemy_rank) == 0; };
     const auto consider_enemy = [&](const Cell& cell, int priority) {
         const auto rating = std::make_tuple(priority, Grid_Distance(base, cell), cell.As_Cell_Number());
         if (rating >= enemy_rank) return;
@@ -3129,6 +3570,8 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
         Cell Direction;
         int OpenDepth;
         bool Frontier = false;
+        bool AssetAim = false;
+        Cell Origin = Cell(0, 0);
     };
     const bool heavy = Rule->BuildPDefense.Is_Present(type) && !Rule->BuildAA.Is_Present(type);
     const Cell threatened = required_focus ? *required_focus : Advanced_AI_Defense_Focus(type);
@@ -3177,9 +3620,70 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
             }
         }
     }
+    /**
+     *  AF-0009U: Without a threat, a recent attack or enemy units near the base,
+     *  defenses are spread instead of all going to the side of the construction
+     *  yard that faces the enemy. Important own buildings (construction yard,
+     *  refineries, factories, power, radar, tech) with too few defenses nearby
+     *  get extra aims, and sites with many defenses nearby rank lower.
+     */
+    const bool spread = !threat && !focus_threat && !enemy_unit_near() && RuleExtension->IsAdvancedAIDefenseSpread;
+    struct SpreadAsset { Cell Center; int HalfSize; int Importance; int Coverage; };
+    std::vector<SpreadAsset> spread_assets;
+    std::vector<Cell> own_defenses;
+    int asset_aims = 0;
+    if (spread) {
+        for (const BuildingClass* building : Buildings) {
+            if (!Existing_Building(building) || building->House != house) continue;
+            const Cell center(static_cast<short>(building->Get_Cell().X + building->Class->Width() / 2),
+                static_cast<short>(building->Get_Cell().Y + building->Class->Height() / 2));
+            if (Is_Advanced_AI_Defense_Type(building->Class)) {
+                own_defenses.push_back(center);
+                continue;
+            }
+            if (building->Class->IsWall || Defensive_Building(building->Class)) continue;
+            const int importance = Spread_Asset_Importance(building->Class);
+            if (importance > 0) {
+                spread_assets.push_back({center, std::max(building->Class->Width(), building->Class->Height()) / 2,
+                    importance, 0});
+            }
+        }
+        for (auto& asset : spread_assets) {
+            for (const Cell& defense : own_defenses) {
+                if (asset.Center.Relative_Distance_To(defense) <= SpreadCoverRadius * SpreadCoverRadius) asset.Coverage++;
+            }
+        }
+        std::vector<const SpreadAsset*> order;
+        for (const auto& asset : spread_assets) {
+            if (asset.Coverage < asset.Importance) order.push_back(&asset);
+        }
+        const Cell toward = focus != NoExpansionCell ? focus : base;
+        std::sort(order.begin(), order.end(), [&](const SpreadAsset* a, const SpreadAsset* b) {
+            return std::make_tuple(a->Coverage - a->Importance, a->Center.Relative_Distance_To(toward), a->Center.As_Cell_Number()) <
+                std::make_tuple(b->Coverage - b->Importance, b->Center.Relative_Distance_To(toward), b->Center.As_Cell_Number());
+        });
+        for (const SpreadAsset* asset : order) {
+            if (asset_aims >= SpreadAssetAims) break;
+            // Face the enemy; without one, face away from the base center.
+            const int dx = focus != NoExpansionCell ? focus.X - asset->Center.X : asset->Center.X - base.X;
+            const int dy = focus != NoExpansionCell ? focus.Y - asset->Center.Y : asset->Center.Y - base.Y;
+            Cell direction(static_cast<short>((dx > 0) - (dx < 0)), static_cast<short>((dy > 0) - (dy < 0)));
+            if (direction == Cell(0, 0)) direction = Cell(1, 0);
+            for (const int gap : {asset->HalfSize + 2, asset->HalfSize + 3, asset->HalfSize + 1}) {
+                const Cell aim = offset(asset->Center, direction, gap);
+                if (!Playable_Cell(aim)) continue;
+                const int depth = open_depth(aim, direction);
+                if (depth < 2) continue;
+                ranked.push_back({aim, direction, depth, false, true, asset->Center});
+                asset_aims++;
+                break;
+            }
+        }
+    }
     const auto rank = [&](const Approach& approach) {
         const int distance = focus == NoExpansionCell ? 0 : approach.Aim.Relative_Distance_To(intercept);
-        return std::make_tuple(!approach.Frontier, distance, -approach.OpenDepth, approach.Aim.As_Cell_Number());
+        return std::make_tuple(spread && !approach.AssetAim, !approach.Frontier, distance, -approach.OpenDepth,
+            approach.Aim.As_Cell_Number());
     };
     std::sort(ranked.begin(), ranked.end(), [&](const auto& a, const auto& b) { return rank(a) < rank(b); });
     if (!threat && !heavy && !ranked.empty() && focus_threat &&
@@ -3196,6 +3700,7 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
     long long chosen_distance = 0;
     bool chosen_frontier = false;
     std::tuple<int, int, int, int> best_rating{};
+    std::tuple<int, int, int, int> spread_rating{};
     std::set<int> tried_aims;
     const auto expansion = threat ? ExpansionPlans.find(static_cast<int>(house->HeapID)) : ExpansionPlans.end();
     std::optional<ExpansionStock> frontier_stock;
@@ -3249,7 +3754,7 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
     };
     for (const auto& approach : ranked) {
         if (!tried_aims.insert(approach.Aim.As_Cell_Number()).second) continue;
-        if (probes++ == (threat ? 6 : heavy ? 3 * PlacementProbes : PlacementProbes)) break;
+        if (probes++ == (threat ? 6 : (heavy ? 3 * PlacementProbes : PlacementProbes) + asset_aims)) break;
         Cell site = house->Find_Build_Location(type, &Weight_Expansion_Anchor, approach.Aim.As_Cell_Number());
         if (site == NoExpansionCell || !Playable_Cell(site) || !type->Legal_Placement(site, This()) ||
             (threat && !In_Native_AI_Build_Range(house, type, site))) continue;
@@ -3257,7 +3762,7 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
         const long long distance_squared = static_cast<long long>(center.Relative_Distance_To(intercept)) * CELL_LEPTON_W * CELL_LEPTON_W;
         if (required_focus && (!threat || !threat->RequireContactRange) && static_cast<long long>(center.Relative_Distance_To(*required_focus)) *
             CELL_LEPTON_W * CELL_LEPTON_W > static_cast<long long>(range) * range) continue;
-        const Cell side_origin = threat ? threatened : base;
+        const Cell side_origin = threat ? threatened : approach.AssetAim ? approach.Origin : base;
         const int dot = (center.X - side_origin.X) * approach.Direction.X + (center.Y - side_origin.Y) * approach.Direction.Y;
         if ((threat ? dot < 0 : dot <= 0) ||
             !Playable_Cell(offset(center, Cell(1, 0), 2)) || !Playable_Cell(offset(center, Cell(-1, 0), 2)) ||
@@ -3282,7 +3787,27 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
             }
             if (blocks_access || !protects_expansion(site) || !preserves_working_routes(site)) continue;
         }
-        if (heavy || focus_threat) {
+        if (spread) {
+            int depth = approach.OpenDepth;
+            if (heavy) {
+                const int clearance = std::max(type->Width(), type->Height()) / 2 + 1;
+                depth = open_depth(offset(center, approach.Direction, clearance), approach.Direction);
+                if (depth < 2) continue;
+            }
+            int crowd = 0;
+            for (const Cell& defense : own_defenses) {
+                if (center.Relative_Distance_To(defense) <= SpreadCrowdRadius * SpreadCrowdRadius) crowd++;
+            }
+            int gain = 0;
+            for (const auto& asset : spread_assets) {
+                if (asset.Coverage < asset.Importance &&
+                    center.Relative_Distance_To(asset.Center) <= SpreadCoverRadius * SpreadCoverRadius) gain += asset.Importance;
+            }
+            const int distance = focus == NoExpansionCell ? 0 : center.Relative_Distance_To(intercept);
+            const auto rating = std::make_tuple(2 * crowd - gain, distance, -depth, site.As_Cell_Number());
+            if (chosen != NoExpansionCell && rating >= spread_rating) continue;
+            spread_rating = rating;
+        } else if (heavy || focus_threat) {
             int depth = approach.OpenDepth;
             if ((!threat && heavy) || (threat && threat->HasContact && !threat->Air && threat->Direct &&
                 !threat->RequireContactRange)) {
@@ -3299,7 +3824,7 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
         chosen_aim = approach.Aim;
         chosen_distance = distance_squared;
         chosen_frontier = approach.Frontier;
-        if (!heavy && !focus_threat) break;
+        if (!spread && !heavy && !focus_threat) break;
     }
     if (chosen != NoExpansionCell && threat_placement) {
         DEV_DEBUG_INFO("AF-0009-DEFENSE-PREVENTIVE: house={} frame={} decision=placement-site defense={} "
@@ -3314,9 +3839,11 @@ Cell HouseClassExtension::Find_Advanced_AI_Defense_Site(BuildingTypeClass* type,
         Retry_Advanced_AI_Defense_Placement(type);
     }
     if (chosen != NoExpansionCell && !required_focus) {
-        DEV_DEBUG_INFO("AF-0009: house={} frame={} defense={} site={},{} approach={},{} focus={},{} frontier-probe={}\n",
+        DEV_DEBUG_INFO("AF-0009: house={} frame={} defense={} site={},{} approach={},{} focus={},{} frontier-probe={} "
+            "spread={} spread-score={} uncovered-assets={}\n",
             static_cast<int>(house->HeapID), Frame, type->Name(), chosen.X, chosen.Y, chosen_aim.X, chosen_aim.Y,
-            focus.X, focus.Y, chosen_frontier);
+            focus.X, focus.Y, chosen_frontier, spread, spread ? std::get<0>(spread_rating) : 0,
+            std::count_if(spread_assets.begin(), spread_assets.end(), [](const auto& asset) { return asset.Coverage < asset.Importance; }));
     }
     return chosen;
 }
@@ -3391,6 +3918,25 @@ ExitType HouseClassExtension::Exit_Advanced_AI_Expansion_Product(BuildingClass* 
     }
     const Cell placed = result == EXIT_NORMAL ? building->Get_Cell() : NoExpansionCell;
     const bool directed = placement.Site != NoExpansionCell && placed == placement.Site;
+    if (placement.Creep) {
+        auto& creep = ExpansionCreeps[id];
+        if (result == EXIT_NORMAL) {
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} expansion-creep placed={} site={},{} target={},{} step={}\n",
+                id, Frame, type->Name(), placed.X, placed.Y, creep.Target.X, creep.Target.Y, creep.Steps + 1);
+            CreepSteps[id].push_back({building->ID, creep.Target, static_cast<long>(Frame)});
+            if (role == PlacementRole::Refinery) {
+                creep = {};
+            } else {
+                ++creep.Steps;
+                creep.Type = STRUCT_NONE;
+                creep.Site = NoExpansionCell;
+                creep.LastProbe = -1;
+            }
+        } else if (result != EXIT_TRY_AGAIN) {
+            creep.Site = NoExpansionCell;
+            creep.LastProbe = -1;
+        }
+    }
     if (directed && placement.Advances && !plan.AwaitingService) {
         // The base edge moved closer to this field. Retry the native refinery checks.
         const int field = Survey_Field_ID(placement.Target);

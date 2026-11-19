@@ -52,6 +52,23 @@ public:
     bool Supports_Balloon_Hover() const;
     static unsigned Balloon_Hover_Sync_CRC(unsigned native_crc);
 
+    /**
+     *  AF-0009U: Advanced AI combat value model (ported from DTA).
+     *  These are derived from the rules data and add no saved state.
+     */
+    int AntiNoneArmorValue() const;
+    int AntiLightArmorValue() const;
+    int AntiHeavyArmorValue() const;
+    int AntiNoneArmorValueAA() const;
+    int AntiLightArmorValueAA() const;
+    int AntiHeavyArmorValueAA() const;
+    int AntiAirValue(ArmorType armor) const;
+    int ArtilleryValue() const;
+    int DefensiveValue() const;
+    bool CategorizedAsLightlyArmored() const;
+    int Scale_Value_By_Properties(int value, double speedmultiplier = 1.0, double strengthmultiplier = 1.0,
+        double cloakmultiplier = 1.0, double costweightmultiplier = 1.0) const;
+
 public:
     /**
      *  This is the sound effect to play when the unit is cloaking.
