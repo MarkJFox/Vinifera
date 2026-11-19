@@ -502,6 +502,8 @@ namespace
     constexpr int SavingsGoalLifetime = 2 * TICKS_PER_MINUTE;
     std::map<std::pair<int, int>, std::string_view> SavingsTraces;
     std::map<int, std::tuple<std::string_view, int, int, int, int>> PreventiveDefenseTraces;
+    // AF-0009U: Last logged defense upgrade per house (upgrade, replaced type, frame).
+    std::map<int, std::tuple<StructType, StructType, long>> DefenseUpgradeTraces;
     std::map<std::pair<int, StructType>, long> ThreatDefensePlacementFailures;
 
     int Weapon_Strength(const WeaponTypeClass* weapon, ArmorType armor, RTTIType category, bool air, bool passive)
@@ -821,6 +823,7 @@ void HouseClassExtension::Clear_Advanced_AI_Building_Order_State()
     SavingsGoals.clear();
     SavingsTraces.clear();
     PreventiveDefenseTraces.clear();
+    DefenseUpgradeTraces.clear();
     ThreatDefensePlacementFailures.clear();
     FailedBuildingSites.clear();
     BuildingOrderTraces.clear();
@@ -3239,10 +3242,23 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Defense(const c
             minimum = required_funds;
             goal = order == type ? AdvancedAIPowerGoal{} : AdvancedAIPowerGoal{type, false, false, emergency, preventive};
         }
-        if (best && !std::get<0>(best_rank) && upgrade && upgrade_value > best_value) {
-            DEV_DEBUG_INFO("AF-0009U: house={} frame={} defense-upgrade-savings={} instead-of={} lost={} funds={}\n",
-                house_id, Frame, upgrade->Name(), chosen_type->Name(),
-                Recent_Defense_Losses(house_id, chosen_type->HeapID), upgrade_funds);
+        /**
+         *  AF-0009U: Save only while at least half of the upgrade is covered.
+         *  Nod saved 77 s for an obelisk (1650+) with 25-900 credits and stayed
+         *  without defense (log 19.11.2026 20-54-58); the cheaper type is better.
+         */
+        if (best && !std::get<0>(best_rank) && upgrade && upgrade_value > best_value && 2 * funds >= upgrade_funds) {
+            // The selection runs several times per frame; log a changed goal, or once a minute.
+            const auto previous = DefenseUpgradeTraces.find(house_id);
+            if (previous == DefenseUpgradeTraces.end() || std::get<0>(previous->second) != upgrade->HeapID ||
+                std::get<1>(previous->second) != chosen_type->HeapID || Frame < std::get<2>(previous->second) ||
+                Frame - std::get<2>(previous->second) >= TICKS_PER_MINUTE) {
+                DefenseUpgradeTraces.insert_or_assign(house_id,
+                    std::make_tuple(upgrade->HeapID, chosen_type->HeapID, static_cast<long>(Frame)));
+                DEV_DEBUG_INFO("AF-0009U: house={} frame={} defense-upgrade-savings={} instead-of={} lost={} funds={}\n",
+                    house_id, Frame, upgrade->Name(), chosen_type->Name(),
+                    Recent_Defense_Losses(house_id, chosen_type->HeapID), upgrade_funds);
+            }
             Request_Advanced_AI_Savings(upgrade_funds, "defense-upgrade", true);
             best = nullptr;
             chosen_type = nullptr;
