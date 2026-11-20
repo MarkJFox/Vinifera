@@ -21,6 +21,9 @@
 #include "tibsun_globals.h"
 #include "vinifera_saveload.h"
 
+#include <cstdio>
+#include <cstring>
+
 
 /**
  *  Class constructor.
@@ -44,6 +47,9 @@ SideClassExtension::SideClassExtension(const SideClass *this_ptr) :
     OptionsMenuTextColor(OPTIONS_MENU_TEXT_DEFAULT_COLOR),
     ScreenTextColor(SCREEN_TEXT_DEFAULT_COLOR)
 {
+    ObserverTileBackground[0] = '\0';
+    ObserverTileIcon[0] = '\0';
+
     SideExtensions.Add(this);
 }
 
@@ -178,6 +184,9 @@ bool SideClassExtension::Read_INI(CCINIClass &ini)
         Disguise = Rule->Disguise;
         SurvivorDivisor = Rule->SurvivorDivisor;
 
+        std::snprintf(ObserverTileBackground, sizeof(ObserverTileBackground), "OBS%s", ini_name);
+        std::snprintf(ObserverTileIcon, sizeof(ObserverTileIcon), "OBS%sI", ini_name);
+
         if (std::strstr(ini_name, "GDI")) {
             RegularPowerPlant = Rule->GDIPowerPlant;
             AdvancedPowerPlant = nullptr;
@@ -219,6 +228,12 @@ bool SideClassExtension::Read_INI(CCINIClass &ini)
 
     OptionsMenuTextColor = ini.Get_RGBColor(ini_name, "OptionsMenuTextColor", OptionsMenuTextColor);
     ScreenTextColor = ini.Get_RGBColor(ini_name, "ScreenTextColor", ScreenTextColor);
+
+    char defvalue[sizeof(ObserverTileBackground)];
+    std::strncpy(defvalue, ObserverTileBackground, sizeof(defvalue));
+    ini.Get_String(ini_name, "ObserverTileBackground", defvalue, ObserverTileBackground, sizeof(ObserverTileBackground));
+    std::strncpy(defvalue, ObserverTileIcon, sizeof(defvalue));
+    ini.Get_String(ini_name, "ObserverTileIcon", defvalue, ObserverTileIcon, sizeof(ObserverTileIcon));
 
     IsInitialized = true;
 

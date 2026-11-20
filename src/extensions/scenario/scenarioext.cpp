@@ -100,7 +100,9 @@ ScenarioClassExtension::ScenarioClassExtension(const ScenarioClass *this_ptr) :
     GlobalExtensionClass(this_ptr),
     IsIceDestruction(true),
     SidebarSide(SIDE_NONE),
-    IsUseMPAIBaseNodes(false)
+    IsUseMPAIBaseNodes(false),
+    ObserverClockElapsed(0),
+    ObserverClockLastTick(0)
 {
     /**
      *  This copies the behavior of the games ScenarioClass.
@@ -152,6 +154,12 @@ HRESULT ScenarioClassExtension::Load(IStream *pStm)
     if (FAILED(hr)) {
         return hr;
     }
+
+    /**
+     *  The saved tick belongs to the session that wrote the save; restart the
+     *  observer clock from the saved elapsed time.
+     */
+    ObserverClockLastTick = 0;
 
     return hr;
 }
@@ -212,6 +220,8 @@ void ScenarioClassExtension::Init_Clear()
     HouseClassExtension::Clear_Advanced_AI_Log_State();
     HouseClassExtension::Clear_Advanced_AI_Resource_State();
     IsIceDestruction = true;
+    ObserverClockElapsed = 0;
+    ObserverClockLastTick = 0;
     ScorePlayerColor = RGBStruct{ 253, 181, 28 }; // Default to TS GDI score color
     ScoreEnemyColor = RGBStruct{ 250, 28, 28 };   // Default to TS Nod score color
 

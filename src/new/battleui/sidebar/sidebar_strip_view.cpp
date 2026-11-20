@@ -306,6 +306,9 @@ void SidebarStripView::Deactivate()
 }
 
 
+bool (*SidebarStripView::ScrollHandler)(bool up, bool& scrolled) = nullptr;
+
+
 /***************************************************************************
 **  Runtime behavior
 ***************************************************************************/
@@ -327,13 +330,21 @@ bool SidebarStripView::AI(KeyNumType& input, Point2D&)
      */
     if (input == KeyNumType(UpButton.ID | KN_BUTTON)) {
         UpButton.IsPressed = false;
-        if (!Scroll(true)) {
+        bool scrolled = false;
+        if (!(ScrollHandler != nullptr && ScrollHandler(true, scrolled))) {
+            scrolled = Scroll(true);
+        }
+        if (!scrolled) {
             Sound_Effect(Rule->ScoldSound);
         }
     }
     if (input == KeyNumType(DownButton.ID | KN_BUTTON)) {
         DownButton.IsPressed = false;
-        if (!Scroll(false)) {
+        bool scrolled = false;
+        if (!(ScrollHandler != nullptr && ScrollHandler(false, scrolled))) {
+            scrolled = Scroll(false);
+        }
+        if (!scrolled) {
             Sound_Effect(Rule->ScoldSound);
         }
     }

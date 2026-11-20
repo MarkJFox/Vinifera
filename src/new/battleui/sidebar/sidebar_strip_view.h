@@ -102,6 +102,13 @@ public:
     void Draw(Surface& surface, const Rect& rect);
     bool Scroll(bool up);
     bool Scroll_Page(bool up);
+
+    /**
+     *  Aftermath: Optional handler for the strip scroll buttons. When it returns
+     *  true it handled the press, and `scrolled` tells whether anything moved.
+     *  The spectator tiles use this to scroll with the strip buttons.
+     */
+    static bool (*ScrollHandler)(bool up, bool& scrolled);
     void Prepare_Model_Recalc();
     void Finish_Model_Recalc();
 

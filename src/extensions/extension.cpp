@@ -2018,6 +2018,7 @@ unsigned Extension::Get_Save_Version_Number()
 {
     // AF-0009 saves the Rules switch, even if it fits existing padding.
     // AF-0009U adds Advanced AI tactic, team and house production state.
+    // Aftermath spectator UI adds the observer clock and side tile art.
     unsigned version = 0x210000;
 
     /**

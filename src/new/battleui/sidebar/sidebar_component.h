@@ -12,6 +12,7 @@
 #include "action_bar_view.h"
 #include "ibattleui_component.h"
 #include "sidebar_model.h"
+#include "sidebar_observer_view.h"
 #include "uicontrol.h"
 
 
@@ -87,6 +88,7 @@ private:
      */
     ActionBarView ActionBar;
     SidebarModel Model;
+    SidebarObserverView Observer;
     ISidebarView* ActiveView;
     SidebarViewType ActiveViewType;
 };

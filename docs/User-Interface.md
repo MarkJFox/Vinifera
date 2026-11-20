@@ -176,6 +176,26 @@ Due to limitations of the game's tooltip system, the length of the description i
 Due to implementation details, it is recommended that you do not make the queue longer than 50 units. Dequeueing more than 63 units at a time could potentially result in other actions being done by the player on the same frame being ignored by the game.
 ```
 
+### Spectator Info Tiles
+
+- When the local player is a spectator, the cameo area of the sidebar shows one info tile per player instead of the build strips. A tile covers two cameo rows and both cameo columns (130x102 pixels with the default tabbed layout, 131x102 with the default classic layout).
+- A tile shows the player name in the player color, the available money, the power output and drain (green while the power is sufficient, red otherwise) and the number of units the player has killed. The side icon is drawn in the bottom right corner. Tiles of defeated players are darkened.
+- If not all tiles fit, the sidebar scroll buttons and the mouse wheel scroll the tile list.
+- The tile art is set per side in `RULES.INI`. Names are given without extension: a PNG, BMP or PCX image of that name is used first, otherwise a SHP. Images use magenta (255,0,255) as the transparent color; PNG images must be 24-bit RGB without alpha channel. SHPs use the sidebar palette.
+- Every tile is framed with a 1 pixel border in the player color, drawn over the background art. Leave the outermost pixel row and column of the background art free of detail. Without background art, the tile is darkened.
+
+In `RULES.INI`:
+```ini
+[SOMESIDE]                    ; Side
+ObserverTileBackground=       ; string, the tile background image or shape. Defaults to OBS<Side>, e.g. OBSGDI.
+ObserverTileIcon=             ; string, the side icon drawn in the bottom right corner. Defaults to OBS<Side>I, e.g. OBSGDII.
+```
+
+### Spectator Clock
+
+- When the local player is a spectator, the credits display shows the elapsed match time instead, as `MM:SS` and as `HH:MM:SS` once the match runs for an hour.
+- The clock measures real time, not game frames, so it keeps the correct pace when the game runs slower than its set speed. In singleplayer games the clock stops while the game is paused. The elapsed time is kept in saved games.
+
 ## Beacons
 
 Vinifera implements multiplayer beacons, similar to those seen in Red Alert 2.

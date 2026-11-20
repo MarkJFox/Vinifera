@@ -127,6 +127,14 @@ class ScenarioClassExtension final : public GlobalExtensionClass<ScenarioClass>
         bool IsUseMPAIBaseNodes;
 
         /**
+         *  Aftermath: Real elapsed match time for the observer clock, in
+         *  milliseconds, and the system tick it was last advanced at (0 when the
+         *  clock has not been advanced since the scenario started or was loaded).
+         */
+        unsigned long long ObserverClockElapsed;
+        unsigned long long ObserverClockLastTick;
+
+        /**
          *  Convenient property to access IsGDI as a HousesType.
          */
         HousesType Get_House() const { return static_cast<HousesType>(reinterpret_cast<unsigned char&>(This()->IsGDI)); }

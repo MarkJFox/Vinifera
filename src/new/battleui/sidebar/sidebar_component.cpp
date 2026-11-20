@@ -12,8 +12,10 @@
 #include "sidebar_component.h"
 
 #include "abstract.h"
+#include "battleui.h"
 #include "building.h"
 #include "convert.h"
+#include "dsurface.h"
 #include "eventext.h"
 #include "extension.h"
 #include "factory.h"
@@ -27,6 +29,7 @@
 #include "palette.h"
 #include "sidebar.h"
 #include "sidebar_classic_view.h"
+#include "sidebar_observer_view.h"
 #include "sidebar_strip_view.h"
 #include "sidebar_tabbed_view.h"
 #include "isidebar_view.h"
@@ -334,6 +337,14 @@ void Handle_Techno_Left_Press(const ResolvedCameoAction& action)
 }
 
 
+/**
+ *  Aftermath: Routes the strip scroll buttons to the spectator tiles.
+ *
+ *  @author: Aftermath
+ */
+static bool Observer_Strip_Scroll(bool up, bool& scrolled);
+
+
 /***************************************************************************
 **  Lifecycle and setup
 ***************************************************************************/
@@ -348,6 +359,7 @@ SidebarComponent::SidebarComponent() :
     ActiveView(nullptr),
     ActiveViewType(SIDEBAR_CLASSIC)
 {
+    SidebarStripView::ScrollHandler = &Observer_Strip_Scroll;
 }
 
 
@@ -411,6 +423,7 @@ void SidebarComponent::Init_Clear()
 {
     ActionBar.Init_Clear();
     Model.Init_Clear();
+    Observer.Init_Clear();
 
     if (ActiveView) {
         ActiveView->Init_Clear();
@@ -447,6 +460,8 @@ void SidebarComponent::Init_For_House()
     if (ActiveView) {
         ActiveView->Init_For_House();
     }
+
+    Observer.Init_For_House();
 
     ActionBar.Init_For_House();
 }
@@ -496,6 +511,17 @@ void SidebarComponent::Draw()
         ActiveView->Draw();
     }
 
+    /**
+     *  Aftermath: A spectator builds nothing, so the cameo area shows the
+     *  player info tiles instead.
+     */
+    if (SidebarObserverView::Is_Observer() && Map.IsSidebarActive && SidebarSurface != nullptr) {
+        Surface* oldsurface = LogicalSurface;
+        LogicalSurface = SidebarSurface;
+        Observer.Draw(*SidebarSurface, Rect(0, 0, SidebarSurface->Get_Width(), SidebarSurface->Get_Height()));
+        LogicalSurface = oldsurface;
+    }
+
     ActionBar.Draw();
 }
 
@@ -536,6 +562,10 @@ bool SidebarComponent::Add(RTTIType type, int id)
  */
 bool SidebarComponent::Scroll(bool up, int column)
 {
+    if (SidebarObserverView::Is_Observer()) {
+        return Observer.Scroll(up);
+    }
+
     if (ActiveView) {
         return ActiveView->Scroll(up, column);
     }
@@ -550,6 +580,10 @@ bool SidebarComponent::Scroll(bool up, int column)
  */
 bool SidebarComponent::Scroll_Page(bool up, int column)
 {
+    if (SidebarObserverView::Is_Observer()) {
+        return Observer.Scroll_Page(up);
+    }
+
     if (ActiveView) {
         return ActiveView->Scroll_Page(up, column);
     }
@@ -718,6 +752,24 @@ void SidebarComponent::Shift_Sidebar()
     if (ActiveView) {
         ActiveView->Shift_Sidebar();
     }
+
+    Observer.Set_Layout(ActiveViewType, Visible_Buttons_Per_Column());
+}
+
+
+/**
+ *  Aftermath: Scrolls the spectator tiles with the strip scroll buttons.
+ *
+ *  @author: Aftermath
+ */
+static bool Observer_Strip_Scroll(bool up, bool& scrolled)
+{
+    if (!SidebarObserverView::Is_Observer()) {
+        return false;
+    }
+
+    scrolled = BattleUI.Get_Sidebar().Scroll(up, -1);
+    return true;
 }
 
 

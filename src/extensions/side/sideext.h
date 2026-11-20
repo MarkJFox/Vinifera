@@ -132,4 +132,12 @@ SideClassExtension final : public AbstractTypeClassExtension
          *  Color to be used for screen text for this side.
          */
         RGBClass ScreenTextColor;
+
+        /**
+         *  Aftermath: Spectator info tile art for players of this side. Names are
+         *  given without extension; PNG, BMP and PCX images are tried first, then
+         *  a SHP of the same name.
+         */
+        char ObserverTileBackground[32];
+        char ObserverTileIcon[32];
 };
