@@ -116,6 +116,10 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     PlayerNormal(),
     IsHasPlayerNormal(false),
     PersistTagsOnAIDeploy(false),
+    SlaveMinerShortScan(-1),
+    SlaveMinerLongScan(-1),
+    SlaveMinerScanCorrection(CELL_LEPTON_W * 3),
+    SlaveMinerKickFrameDelay(-1),
     IsUseAdvancedAI(false),
     IsAdvancedAIUnitProduction(true),
     AdvancedAISameUnitAntiBias(0.1),
@@ -304,6 +308,10 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(SelfHealingStep);
     crc(BaseUnit.Count());
     crc(PersistTagsOnAIDeploy);
+    crc(SlaveMinerShortScan);
+    crc(SlaveMinerLongScan);
+    crc(SlaveMinerScanCorrection);
+    crc(SlaveMinerKickFrameDelay);
     crc(IsUseAdvancedAI);
     crc(IsAdvancedAIUnitProduction);
     crc(AdvancedAIOffensiveWeaponValueMultiplier);
@@ -794,6 +802,10 @@ bool RulesClassExtension::General(CCINIClass &ini)
     IsFreeRadarOnLowPower = ini.Get_Bool(GENERAL, "FreeRadarOnLowPower", IsFreeRadarOnLowPower);    
     IsCellTagsIgnoreStealth = ini.Get_Bool(GENERAL, "CellTagsIgnoreStealth", IsCellTagsIgnoreStealth);
     PersistTagsOnAIDeploy = ini.Get_Bool(GENERAL, "PersistTagsOnAIDeploy", PersistTagsOnAIDeploy);
+    SlaveMinerShortScan = ini.Get_Lepton(GENERAL, "SlaveMinerShortScan", SlaveMinerShortScan);
+    SlaveMinerLongScan = ini.Get_Lepton(GENERAL, "SlaveMinerLongScan", SlaveMinerLongScan);
+    SlaveMinerScanCorrection = ini.Get_Lepton(GENERAL, "SlaveMinerScanCorrection", SlaveMinerScanCorrection);
+    SlaveMinerKickFrameDelay = ini.Get_Int(GENERAL, "SlaveMinerKickFrameDelay", SlaveMinerKickFrameDelay);
 
     /**
      *  Allow replacing any signle movement zone with a copy of RA2's water MZone.

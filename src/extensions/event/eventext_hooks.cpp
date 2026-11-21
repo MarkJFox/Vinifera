@@ -38,6 +38,7 @@
 #include "version.h"
 #include "vinifera_globals.h"
 #include "wwcrc.h"
+#include "unitext.h"
 
 static unsigned Scenario_Sync_CRC()
 {
@@ -1067,6 +1068,12 @@ DEFINE_HOOK(0x004948A5, _EventClass_Execute_QMove_Aircraft_Patch, 6)
     if (mission == MISSION_QMOVE && this_ptr->Fetch_RTTI() == RTTI_AIRCRAFT) {
         this_ptr->Assign_Target(nullptr);
     }
+
+    /**
+     *  Aftermath: remember that a harvester got a player order, so it does not
+     *  resume harvesting on its own (see UnitClassExtension::Dock_Wait_AI).
+     */
+    UnitClassExtension::Player_Order(this_ptr, static_cast<MissionType>(mission));
 
     return 0;
 }

@@ -65,6 +65,7 @@
 #include "voc.h"
 #include "vox.h"
 #include "weapontype.h"
+#include "slavemanager.h"
 #include "wave.h"
 
 #include <algorithm>
@@ -1344,6 +1345,14 @@ ActionType BuildingClassExt::_What_Action(const Cell& cell, bool check_fog, bool
         }
     }
 
+    /**
+     *  Aftermath: A deployed Slave Miner can be sent to another Tiberium field.
+     */
+    if (action != ACTION_ATTACK && House->Is_Player() && SlaveManagerClass::Accepts_Harvest_Order(this)
+        && SlaveManagerClass::Is_Harvest_Order_Cell(cell) && !Map.Is_Shrouded(cell.As_Coord())) {
+        return ACTION_HARVEST;
+    }
+
     /*
     **  Don't allow targeting of SAM sites, even if the CTRL key
     **  is held down.
@@ -2430,10 +2439,57 @@ DEFINE_HOOK(0x00430A01, _BuildingClass_Mission_Deconstruction_ConYard_Unlimbo_Pa
     LEA_STACK(Coord const*, coord, 0x40);
 
     if (Unlimbo_Helper(mcv, *coord, dir)) {
+
+        /**
+         *  Slave Miner: hand the manager over to the vehicle we undeployed into.
+         */
+        GET(BuildingClass*, this_ptr, ESI);
+        SlaveManagerClass::Transfer(this_ptr, mcv);
+
         return 0x00430A1A;
     } else {
         return 0x00430B37;
     }
+}
+
+
+/**
+ *  TS only undeploys a building with UndeploysInto if it is a mobile deployer,
+ *  limpet/mobile war factory, or an MCV with MCVRedeploy; otherwise the
+ *  deconstruction sells it. A Slave Miner that has a target to move to always
+ *  undeploys (the relocation logic and the player's move order set one).
+ *
+ *  Replaces the call to BuildingTypeClass::Is_Deployable at the start of the check.
+ */
+DEFINE_HOOK(0x004306C8, _BuildingClass_Mission_Deconstruction_SlaveMiner_Undeploy_Patch, 5)
+{
+    GET(BuildingClass*, this_ptr, ESI);
+
+    if (this_ptr->Class->Is_Deployable() || SlaveManagerClass::Should_Undeploy(this_ptr)) {
+        return 0x00430724; // Undeploy.
+    }
+
+    return 0x004306D1; // Continue with the remaining checks.
+}
+
+
+/**
+ *  Aftermath: Harvest order for a deployed Slave Miner. The clicked cell goes
+ *  out as the archive target first, then the mission event; both are
+ *  processed in order on every machine. The original code then returns true.
+ */
+DEFINE_HOOK(0x0042C210, _BuildingClass_Active_Click_With_SlaveMiner_Harvest_Patch, 7)
+{
+    GET(BuildingClass *, this_ptr, ECX);
+    GET_STACK(ActionType, action, 0x4);
+    GET_STACK(Cell *, cell, 0x8);
+
+    if (action == ACTION_HARVEST && cell != nullptr && SlaveManagerClass::Accepts_Harvest_Order(this_ptr)) {
+        OutList.Add(EventClass(this_ptr->Owner(), EVENT_ARCHIVE, TargetClass(this_ptr), TargetClass(&Map[*cell])));
+        this_ptr->Player_Assign_Mission(MISSION_HARVEST);
+    }
+
+    return 0;
 }
 
 

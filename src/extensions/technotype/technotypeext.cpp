@@ -116,7 +116,13 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const TechnoTypeClass *this_p
     AbandonTargetEscortRange(-1),
     ScrapExplosion(),
     VeteranSightRange(-1),
-    EliteSightRange(-1)
+    EliteSightRange(-1),
+    IsSlaveMiner(false),
+    SlaveMinerHarvestRadius(-1),
+    SlaveMinerShortScan(-1),
+    SlaveMinerLongScan(-1),
+    SlaveMinerScanCorrection(-1),
+    SlaveMinerKickFrameDelay(-1)
 {
 }
 
@@ -284,6 +290,12 @@ void TechnoTypeClassExtension::Object_CRC(CRCEngine &crc) const
     crc(AbandonTargetEscortRange);
     crc(VeteranSightRange);
     crc(EliteSightRange);
+    crc(IsSlaveMiner);
+    crc(SlaveMinerHarvestRadius);
+    crc(SlaveMinerShortScan);
+    crc(SlaveMinerLongScan);
+    crc(SlaveMinerScanCorrection);
+    crc(SlaveMinerKickFrameDelay);
 }
 
 
@@ -389,6 +401,13 @@ bool TechnoTypeClassExtension::Read_INI(CCINIClass &ini)
 
     IsDontScore = ini.Get_Bool(ini_name, "DontScore", IsDontScore);
     IsSpawned = ini.Get_Bool(ini_name, "Spawned", IsSpawned);
+
+    IsSlaveMiner = ini.Get_Bool(ini_name, "SlaveMiner", IsSlaveMiner);
+    SlaveMinerHarvestRadius = ini.Get_Lepton(ini_name, "SlaveMiner.HarvestRadius", SlaveMinerHarvestRadius);
+    SlaveMinerShortScan = ini.Get_Lepton(ini_name, "SlaveMiner.ShortScan", SlaveMinerShortScan);
+    SlaveMinerLongScan = ini.Get_Lepton(ini_name, "SlaveMiner.LongScan", SlaveMinerLongScan);
+    SlaveMinerScanCorrection = ini.Get_Lepton(ini_name, "SlaveMiner.ScanCorrection", SlaveMinerScanCorrection);
+    SlaveMinerKickFrameDelay = ini.Get_Int(ini_name, "SlaveMiner.KickFrameDelay", SlaveMinerKickFrameDelay);
 
     RequiredHouses = ini.Get_Owners(ini_name, "RequiredHouses", RequiredHouses);
     ForbiddenHouses = ini.Get_Owners(ini_name, "ForbiddenHouses", ForbiddenHouses);

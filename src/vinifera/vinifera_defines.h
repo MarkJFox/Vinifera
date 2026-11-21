@@ -37,6 +37,7 @@
 #define UUID_ROCKETTYPE                     "FAE72300-A93C-476C-A6DB-CB2B62ADCECD"
 #define UUID_ADVANCED_AI_TACTIC             "3D90E588-000C-4817-BC13-A457A26F87EC"
 #define UUID_SPAWN_MANAGER                  "157ADEE5-D344-48B9-811B-3FA01EF3CCD4"
+#define UUID_SLAVE_MANAGER                  "BD259ED6-74D4-4D15-894E-75A7BC3823E0"
 #define UUID_PREREQUISITE_GROUP             "C0D8765A-FD0C-476D-B4DD-C8D061C323EE"
 
 
@@ -125,6 +126,7 @@ enum ExtRTTIType
      *  Add new ExtRTTITypes from here.
      */
     EXT_RTTI_SPAWN_MANAGER,
+    EXT_RTTI_SLAVE_MANAGER,
 
     /**
      *  The new total ExtRTTITypes count.

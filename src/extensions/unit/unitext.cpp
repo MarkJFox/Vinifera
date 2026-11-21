@@ -12,11 +12,17 @@
 #include "unitext.h"
 
 #include "building.h"
+#include "buildingtype.h"
+#include "house.h"
+#include "tibsun_globals.h"
+#include "unittype.h"
 #include "debughandler.h"
 #include "extension.h"
 #include "unit.h"
 #include "vinifera_saveload.h"
 #include "wwcrc.h"
+
+#include <algorithm>
 
 
 /**
@@ -27,7 +33,9 @@
 UnitClassExtension::UnitClassExtension(const UnitClass *this_ptr) :
     FootClassExtension(this_ptr),
     Vinifera::Detach::Listener<BuildingClass>(),
-    LastDockedBuilding(nullptr)
+    LastDockedBuilding(nullptr),
+    IsWaitingForDock(false),
+    IsPlayerOrdered(false)
 {
     UnitExtensions.Add(this);
 }
@@ -139,4 +147,129 @@ void UnitClassExtension::On_Detach(BuildingClass *target, bool all)
 void UnitClassExtension::Object_CRC(CRCEngine &crc) const
 {
     crc(LastDockedBuilding != nullptr ? LastDockedBuilding->Fetch_ID() : 0);
+    crc(IsWaitingForDock);
+    crc(IsPlayerOrdered);
+}
+
+
+/**
+ *  How often (in frames) a waiting harvester looks for a dock again.
+ */
+static constexpr int DOCK_WAIT_CHECK_RATE = 30;
+
+
+/**
+ *  Does the harvester's house own a finished dock (from its Dock= list) that is
+ *  not being built or sold? Same house only, like the check in Mission_Harvest.
+ */
+bool UnitClassExtension::Has_Ready_Dock(const UnitClass *unit)
+{
+    const auto &docks = unit->Class->Dock;
+
+    for (int i = 0; i < Buildings.Count(); ++i) {
+        const BuildingClass *building = Buildings[i];
+
+        if (building == nullptr || building->House != unit->House || !building->IsActive
+            || building->IsInLimbo || building->Strength <= 0) {
+            continue;
+        }
+
+        if (std::find(docks.begin(), docks.end(), building->Class) == docks.end()) {
+            continue;
+        }
+
+        const MissionType mission = building->Get_Mission();
+        if (mission == MISSION_CONSTRUCTION || mission == MISSION_DECONSTRUCTION || building->BState == BSTATE_CONSTRUCTION) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+
+/**
+ *  Aftermath: A player order (MEGAMISSION or IDLE event) reached this object.
+ *  Executed on every machine in the same order, so it is sync safe.
+ */
+void UnitClassExtension::Player_Order(TechnoClass *techno, MissionType mission)
+{
+    if (techno == nullptr || techno->RTTI != RTTI_UNIT) {
+        return;
+    }
+
+    UnitClass *unit = static_cast<UnitClass *>(techno);
+    if (!unit->Class->IsToHarvest && !unit->Class->IsToVeinHarvest) {
+        return;
+    }
+
+    UnitClassExtension *ext = Extension::Fetch(unit);
+    ext->IsWaitingForDock = false;
+    ext->IsPlayerOrdered = (mission != MISSION_HARVEST);
+}
+
+
+/**
+ *  Aftermath: Lets a harvester resume harvesting once a dock is available
+ *  again, if it stopped on its own (not by a player order) because:
+ *  - Mission_Harvest found no dock (IsWaitingForDock), or
+ *  - it is full and idle, e.g. its refinery vanished while it was on its way
+ *    there; TS then drives it to where the refinery stood and leaves it there.
+ *  Called every frame after the mission AI.
+ */
+void UnitClassExtension::Dock_Wait_AI()
+{
+    UnitClass *unit = This();
+
+    if (!unit->Class->IsToHarvest && !unit->Class->IsToVeinHarvest) {
+        return;
+    }
+
+    /**
+     *  Harvesting (again): nothing to resume, and a past player order is done with.
+     */
+    if (unit->CurrentMission == MISSION_HARVEST && unit->MissionQueue == MISSION_NONE) {
+        IsPlayerOrdered = false;
+        return;
+    }
+
+    if (IsPlayerOrdered) {
+        IsWaitingForDock = false;
+        return;
+    }
+
+    if (unit->IsInLimbo || unit->Team != nullptr || unit->MissionQueue != MISSION_NONE) {
+        return;
+    }
+
+    const bool full = unit->Class->IsToVeinHarvest ? unit->Weed_Load() >= 1.0 : unit->Tiberium_Load() >= 1.0;
+    if (!IsWaitingForDock && !full) {
+        return;
+    }
+
+    /**
+     *  Idle, or (full) driving to where the refinery stood. A destination left
+     *  over from the harvest mission is driven to first while waiting.
+     */
+    const MissionType mission = unit->CurrentMission;
+    const bool idle = (mission == MISSION_GUARD || mission == MISSION_GUARD_AREA) && unit->NavCom == nullptr;
+    const bool moving_home = full && mission == MISSION_MOVE;
+    if (!idle && !moving_home) {
+        return;
+    }
+
+    if ((Frame + unit->Fetch_ID()) % DOCK_WAIT_CHECK_RATE != 0) {
+        return;
+    }
+
+    if (!Has_Ready_Dock(unit)) {
+        return;
+    }
+
+    IsWaitingForDock = false;
+    unit->Assign_Destination(nullptr);
+    unit->Assign_Mission(MISSION_HARVEST);
+    unit->Commence();
 }

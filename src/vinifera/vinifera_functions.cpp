@@ -34,6 +34,7 @@
 #include "spawner.h"
 #include "spawner_hooks.h"
 #include "spawnmanager.h"
+#include "slavemanager.h"
 #include "tclassfactory.h"
 #include "testlocomotion.h"
 #include "theatertype.h"
@@ -803,6 +804,7 @@ bool Vinifera_Register_Com_Objects()
      *  Other new entities.
      */
     REGISTER_CLASS(SpawnManagerClass);
+    REGISTER_CLASS(SlaveManagerClass);
     
     Extension::Register_Class_Factories();
 

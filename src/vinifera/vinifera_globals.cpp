@@ -77,6 +77,7 @@ DynamicVectorClass<EBoltClass *> EBolts;
 DynamicVectorClass<TheaterTypeClass *> TheaterTypes;
 DynamicVectorClass<ArmorTypeClass *> ArmorTypes;
 DynamicVectorClass<SpawnManagerClass *> SpawnManagers;
+DynamicVectorClass<SlaveManagerClass *> SlaveManagers;
 DynamicVectorClass<RocketTypeClass*> RocketTypes;
 DynamicVectorClass<AdvancedAITacticTypeClass *> AdvancedAITacticTypes;
 DynamicVectorClass<MouseTypeClass *> MouseTypes;

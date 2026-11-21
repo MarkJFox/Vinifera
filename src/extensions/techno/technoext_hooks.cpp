@@ -46,6 +46,7 @@
 #include "sideext.h"
 #include "spawner.h"
 #include "spawnmanager.h"
+#include "slavemanager.h"
 #include "syncrecorder.h"
 #include "syringe.h"
 #include "tactical.h"
@@ -64,6 +65,7 @@
 #include "unit.h"
 #include "unittype.h"
 #include "unittypeext.h"
+#include "unitext.h"
 #include "utracker.h"
 #include "verses.h"
 #include "vinifera_util.h"
@@ -694,6 +696,13 @@ void TechnoClassExt::_Mission_AI()
     }
 
     /**
+     *  Aftermath: harvesters that lost their last dock resume once there is one again.
+     */
+    if (RTTI == RTTI_UNIT) {
+        Extension::Fetch(static_cast<UnitClass *>(static_cast<TechnoClass *>(this)))->Dock_Wait_AI();
+    }
+
+    /**
      *  Certain missions allow the unit to pick up targets on the move.
      */
     if (CurrentMission == MISSION_MOVE || CurrentMission == MISSION_HARVEST || CurrentMission == MISSION_GUARD) {
@@ -702,6 +711,18 @@ void TechnoClassExt::_Mission_AI()
 
     if (extension->SpawnManager) {
         extension->SpawnManager->AI();
+    }
+
+    /**
+     *  Slave Miner logic. It may deploy this vehicle, which hands the manager
+     *  over to the new building and removes this object.
+     */
+    if (extension->SlaveManager) {
+        extension->SlaveManager->AI();
+
+        if (!IsActive) {
+            return;
+        }
     }
 
 

@@ -268,6 +268,33 @@ public:
     bool IsSpawned;
 
     /**
+     *  Is this object a Slave Miner (YR-style mobile refinery)? Set this on both the
+     *  vehicle and the building it deploys into. A building whose UndeploysInto is a
+     *  Slave Miner is treated as one as well.
+     */
+    bool IsSlaveMiner;
+
+    /**
+     *  Working radius around the deployed Slave Miner, in leptons (cells in
+     *  the INI). A harvest order for a field within it does not relocate the
+     *  miner. -1 uses the short scan radius.
+     */
+    int SlaveMinerHarvestRadius;
+
+    /**
+     *  Per-type overrides of the [General] SlaveMiner* scan values, in leptons
+     *  (cells in the INI). -1 uses the global value.
+     */
+    int SlaveMinerShortScan;
+    int SlaveMinerLongScan;
+    int SlaveMinerScanCorrection;
+
+    /**
+     *  Per-type override of [General] SlaveMinerKickFrameDelay. -1 uses the global value.
+     */
+    int SlaveMinerKickFrameDelay;
+
+    /**
      *  Defines how the techno treats targets outside of its zone when scanning for targets.
      */
     TargetZoneScanType TargetZoneScan;

@@ -54,6 +54,7 @@
 #include "warheadtypeext.h"
 #include "weapontype.h"
 #include "weapontypeext.h"
+#include "slavemanager.h"
 
 #include <algorithm>
 
@@ -428,6 +429,68 @@ int UnitClassExt::_Do_MISSION_HUNT()
         return FootClass::Mission_Hunt();
     }
     return Current_Mission_Control().Normal_Delay() + Random_Pick(0, 2);
+}
+
+
+/**
+ *  Aftermath: UnitClass::Mission_Harvest found no dock of the house and is
+ *  about to switch the harvester to guard. Remember that, so it resumes once
+ *  a dock is available again (UnitClassExtension::Dock_Wait_AI).
+ */
+DEFINE_HOOK(0x00654B28, _UnitClass_Mission_Harvest_No_Dock_Wait_Patch, 6)
+{
+    GET(UnitClass *, this_ptr, ESI);
+
+    Extension::Fetch(this_ptr)->IsWaitingForDock = true;
+
+    return 0;
+}
+
+
+/**
+ *  Aftermath: UnitClass::Enter_Idle_Mode is called when a harvester's entry
+ *  into its refinery fails, for example because the refinery was sold or
+ *  destroyed on the way. The original code then turns the leftover
+ *  destination (where the refinery stood) into a move order, or sends a human
+ *  player's harvester to guard; either way it stops for good. A loaded
+ *  harvester harvests on instead: it looks for another dock, or waits for one
+ *  (see the Mission_Harvest patch above). Target and destination are cleared.
+ */
+DEFINE_HOOK(0x00650456, _UnitClass_Enter_Idle_Mode_Harvester_Resume_Patch, 6)
+{
+    GET(UnitClass *, this_ptr, ESI);
+
+    if ((this_ptr->Class->IsToHarvest || this_ptr->Class->IsToVeinHarvest)
+        && this_ptr->CurrentMission == MISSION_ENTER
+        && (this_ptr->Tiberium_Load() > 0.0 || this_ptr->Weed_Load() > 0.0)) {
+
+        R->EDI(MISSION_HARVEST);
+        return 0x00650525; // Assign_Target(nullptr), Assign_Destination(nullptr), Assign_Mission(EDI).
+    }
+
+    return 0;
+}
+
+
+/**
+ *  Aftermath: Slave Miners show the harvest cursor over Tiberium, so the player
+ *  can send them to a field. Replaces the IsToHarvest check in front of the
+ *  ACTION_HARVEST return (which the bridge patch below takes over).
+ */
+DEFINE_HOOK(0x00656613, _UnitClass_What_Action_SlaveMiner_Harvest_Patch, 6)
+{
+    GET(UnitClass *, this_ptr, EDI);
+    GET(Cell *, cell, ESI);
+
+    if (this_ptr->Class->IsToHarvest) {
+        return 0x00656623; // ACTION_HARVEST
+    }
+
+    if (cell != nullptr && SlaveManagerClass::Accepts_Harvest_Order(this_ptr) && SlaveManagerClass::Is_Harvest_Order_Cell(*cell)) {
+        return 0x00656623; // ACTION_HARVEST
+    }
+
+    return 0x00656632; // Weed check.
 }
 
 
@@ -1672,6 +1735,11 @@ DEFINE_HOOK(0x00651122, Unit_Class_Try_To_Deploy_AI_Persist_Tag_Patch, 10)
 {
     GET(UnitClass*, this_ptr, ESI);
     GET(ObjectClass*, new_building, EDI);
+
+    /**
+     *  Slave Miner: hand the manager over to the building we deployed into.
+     */
+    SlaveManagerClass::Transfer(this_ptr, static_cast<TechnoClass *>(new_building));
 
     if (!RuleExtension->PersistTagsOnAIDeploy) {
         return 0;

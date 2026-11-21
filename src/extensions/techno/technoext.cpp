@@ -24,6 +24,7 @@
 #include "rulesext.h"
 #include "saveload.h"
 #include "spawnmanager.h"
+#include "slavemanager.h"
 #include "storageext.h"
 #include "tactical.h"
 #include "team.h"
@@ -55,6 +56,7 @@ TechnoClassExtension::TechnoClassExtension(const TechnoClass *this_ptr) :
     Storage(Tiberiums.Count()),
     SpawnManager(nullptr),
     SpawnOwner(nullptr),
+    SlaveManager(nullptr),
     HasOpportunityFireTarget(false),
     LastTargetFrame(Frame),
     IsToResetBurst(false),
@@ -75,6 +77,13 @@ TechnoClassExtension::TechnoClassExtension(const TechnoClass *this_ptr) :
         const auto ttypeext = Extension::Fetch(this_ptr->TClass);
         if (ttypeext->Spawns)
             SpawnManager = new SpawnManagerClass(const_cast<TechnoClass*>(this_ptr), ttypeext->Spawns, ttypeext->SpawnsNumber, ttypeext->SpawnRegenRate, ttypeext->SpawnReloadRate, ttypeext->SpawnSpawnRate, ttypeext->SpawnLogicRate);
+
+        /**
+         *  Slave Miner: the vehicle and its deployed building each get a manager;
+         *  deploying/undeploying hands the existing one over (SlaveManagerClass::Transfer).
+         */
+        if (SlaveManagerClass::Is_Slave_Miner_Type(this_ptr->TClass))
+            SlaveManager = new SlaveManagerClass(const_cast<TechnoClass*>(this_ptr));
     }
 }
 
@@ -111,6 +120,11 @@ TechnoClassExtension::~TechnoClassExtension()
         SpawnManager = nullptr;
     }
 
+    if (SlaveManager) {
+        delete SlaveManager;
+        SlaveManager = nullptr;
+    }
+
     if (IdleWakeAnim) {
         delete IdleWakeAnim;
         IdleWakeAnim = nullptr;
@@ -136,6 +150,7 @@ HRESULT TechnoClassExtension::Load(IStream *pStm)
 
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(SpawnManager, "SpawnManager");
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(SpawnOwner, "SpawnOwner");
+    VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(SlaveManager, "SlaveManager");
 
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(IdleWakeAnim, "IdleWakeAnim");
     

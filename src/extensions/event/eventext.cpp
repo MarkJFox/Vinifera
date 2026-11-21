@@ -23,6 +23,7 @@
 #include "sessionext.h"
 #include "spawnmanager.h"
 #include "unit.h"
+#include "unitext.h"
 #include "vinifera_globals.h"
 
 
@@ -403,6 +404,12 @@ void EventClassExt::Do_IDLE()
         if (techno->Mission == MISSION_CONSTRUCTION || techno->Mission == MISSION_DECONSTRUCTION) {
             return;
         }
+
+        /**
+         *  Aftermath: a stopped harvester must not resume harvesting on its own.
+         */
+        UnitClassExtension::Player_Order(techno, MISSION_GUARD);
+
         if (!techno->IsOnBridge && Map[techno->PositionCoord].Ramp == RAMP_NONE && techno->Is_On_Elevation()) {
             return;
         }

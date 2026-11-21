@@ -45,6 +45,10 @@ UnitClassExtension final : public FootClassExtension,
         virtual const UnitClass *This_Const() const override { return reinterpret_cast<const UnitClass *>(FootClassExtension::This_Const()); }
         virtual RTTIType Fetch_RTTI() const override { return RTTI_UNIT; }
 
+        void Dock_Wait_AI();
+        static bool Has_Ready_Dock(const UnitClass *unit);
+        static void Player_Order(TechnoClass *techno, MissionType mission);
+
     public:
         /**
         *  #issue-203
@@ -54,4 +58,18 @@ UnitClassExtension final : public FootClassExtension,
         *  when picking a tiberium cell to harvest from.
         */
         BuildingClass *LastDockedBuilding;
+
+        /**
+         *  Aftermath: The harvester stopped (guard) because its house had no
+         *  dock left. It resumes harvesting once a finished dock exists again.
+         *  Any other order clears this.
+         */
+        bool IsWaitingForDock;
+
+        /**
+         *  Aftermath: The last order of this harvester came from its player
+         *  (network event), so it must not resume harvesting on its own. Ends
+         *  as soon as the harvester is harvesting again.
+         */
+        bool IsPlayerOrdered;
 };

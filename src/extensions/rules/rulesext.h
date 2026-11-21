@@ -333,6 +333,23 @@ public:
     bool PersistTagsOnAIDeploy;
 
     /**
+     *  Slave Miner scan radii, in leptons (cells in the INI). A value of -1 for the
+     *  short/long scan falls back to TiberiumShortScan/TiberiumLongScan.
+     *  ScanCorrection: a deployed miner only relocates when the new site is closer
+     *  to the Tiberium by more than this distance.
+     */
+    int SlaveMinerShortScan;
+    int SlaveMinerLongScan;
+    int SlaveMinerScanCorrection;
+
+    /**
+     *  Frames an idle, human-owned Slave Miner waits before it starts harvesting
+     *  on its own. Negative values (default) disable the automatic start for
+     *  human players; they send the miner with the harvest cursor instead.
+     */
+    int SlaveMinerKickFrameDelay;
+
+    /**
      *  Opt-in AF-0009 planning for computer-controlled houses.
      */
     bool IsUseAdvancedAI;

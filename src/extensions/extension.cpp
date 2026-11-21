@@ -85,6 +85,7 @@
 #include "smudgetype.h"
 #include "smudgetypeext.h"
 #include "spawnmanager.h"
+#include "slavemanager.h"
 #include "super.h"
 #include "superext.h"
 #include "supertype.h"
@@ -2106,6 +2107,7 @@ unsigned Extension::Get_Save_Version_Number()
     version += sizeof(ArmorTypeClass);
     version += sizeof(RocketTypeClass);
     version += sizeof(SpawnManagerClass);
+    version += sizeof(SlaveManagerClass);
     version += sizeof(KamikazeTrackerClass);
     version += sizeof(AircraftTrackerClass);
 

@@ -15,6 +15,7 @@
 
 
 class SpawnManagerClass;
+class SlaveManagerClass;
 class EBoltClass;
 class TechnoTypeClass;
 class TechnoTypeClassExtension;
@@ -88,6 +89,11 @@ class TechnoClassExtension : public RadioClassExtension,
          *  The object that spawned this object.
          */
         TechnoClass* SpawnOwner;
+
+        /**
+         *  The Slave Miner logic of this object (vehicle or deployed building).
+         */
+        SlaveManagerClass* SlaveManager;
 
         /**
          *  Is this object's current target an opportunity fire target?
