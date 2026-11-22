@@ -20,6 +20,7 @@
 
 class AircraftTypeClass;
 class BSurface;
+class InfantryTypeClass;
 
 
 class TechnoTypeClassExtension : public ObjectTypeClassExtension
@@ -293,6 +294,30 @@ public:
      *  Per-type override of [General] SlaveMinerKickFrameDelay. -1 uses the global value.
      */
     int SlaveMinerKickFrameDelay;
+
+    /**
+     *  Slaves of a Slave Miner: the infantry type, how many, the frames until
+     *  a dead slave is replaced, the frames a slave stays inside after
+     *  unloading (it is healed meanwhile) and the radius in which a slave
+     *  looks for Tiberium (leptons, cells in the INI; -1 uses the global value).
+     */
+    /**
+     *  Can the deployed Slave Miner be repaired like a normal building? TS
+     *  blocks repairs for buildings that undeploy into a vehicle.
+     */
+    bool IsSlaveMinerRepairable;
+
+    const InfantryTypeClass *SlaveMinerSlave;
+    int SlaveMinerSlaveCount;
+    int SlaveMinerRegenRate;
+    int SlaveMinerReloadRate;
+    int SlaveMinerSlaveScan;
+
+    /**
+     *  On the slave's infantry type: frames per harvested bail. -1 uses the
+     *  global value.
+     */
+    int SlaveMinerHarvestRate;
 
     /**
      *  Defines how the techno treats targets outside of its zone when scanning for targets.

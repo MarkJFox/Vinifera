@@ -350,6 +350,13 @@ public:
     int SlaveMinerKickFrameDelay;
 
     /**
+     *  Radius in which a slave looks for Tiberium (leptons, cells in the INI;
+     *  -1 uses 14 cells like YR) and the frames a slave needs per harvested bail.
+     */
+    int SlaveMinerSlaveScan;
+    int SlaveMinerHarvestRate;
+
+    /**
      *  Opt-in AF-0009 planning for computer-controlled houses.
      */
     bool IsUseAdvancedAI;

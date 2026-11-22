@@ -120,6 +120,8 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     SlaveMinerLongScan(-1),
     SlaveMinerScanCorrection(CELL_LEPTON_W * 3),
     SlaveMinerKickFrameDelay(-1),
+    SlaveMinerSlaveScan(-1),
+    SlaveMinerHarvestRate(30),
     IsUseAdvancedAI(false),
     IsAdvancedAIUnitProduction(true),
     AdvancedAISameUnitAntiBias(0.1),
@@ -312,6 +314,8 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(SlaveMinerLongScan);
     crc(SlaveMinerScanCorrection);
     crc(SlaveMinerKickFrameDelay);
+    crc(SlaveMinerSlaveScan);
+    crc(SlaveMinerHarvestRate);
     crc(IsUseAdvancedAI);
     crc(IsAdvancedAIUnitProduction);
     crc(AdvancedAIOffensiveWeaponValueMultiplier);
@@ -806,6 +810,8 @@ bool RulesClassExtension::General(CCINIClass &ini)
     SlaveMinerLongScan = ini.Get_Lepton(GENERAL, "SlaveMinerLongScan", SlaveMinerLongScan);
     SlaveMinerScanCorrection = ini.Get_Lepton(GENERAL, "SlaveMinerScanCorrection", SlaveMinerScanCorrection);
     SlaveMinerKickFrameDelay = ini.Get_Int(GENERAL, "SlaveMinerKickFrameDelay", SlaveMinerKickFrameDelay);
+    SlaveMinerSlaveScan = ini.Get_Lepton(GENERAL, "SlaveMinerSlaveScan", SlaveMinerSlaveScan);
+    SlaveMinerHarvestRate = ini.Get_Int(GENERAL, "SlaveMinerHarvestRate", SlaveMinerHarvestRate);
 
     /**
      *  Allow replacing any signle movement zone with a copy of RA2's water MZone.

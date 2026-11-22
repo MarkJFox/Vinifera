@@ -24,6 +24,7 @@
 #include "spawnmanager.h"
 #include "unit.h"
 #include "unitext.h"
+#include "slavemanager.h"
 #include "vinifera_globals.h"
 
 
@@ -409,6 +410,7 @@ void EventClassExt::Do_IDLE()
          *  Aftermath: a stopped harvester must not resume harvesting on its own.
          */
         UnitClassExtension::Player_Order(techno, MISSION_GUARD);
+        SlaveManagerClass::Player_Order(techno);
 
         if (!techno->IsOnBridge && Map[techno->PositionCoord].Ramp == RAMP_NONE && techno->Is_On_Elevation()) {
             return;

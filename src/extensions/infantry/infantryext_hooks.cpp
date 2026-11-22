@@ -42,6 +42,7 @@
 #include "tiberiumext.h"
 #include "tibsun_globals.h"
 #include "tibsun_inline.h"
+#include "slavemanager.h"
 #include "vinifera_globals.h"
 #include "vinifera_util.h"
 #include "voc.h"
@@ -1136,6 +1137,26 @@ void InfantryClassExt::_Read_INI(CCINIClass const & ini)
             }
         }
     }
+}
+
+
+/**
+ *  Slave Miner: lets a slave walk into the door cell of its deployed miner,
+ *  which is a building cell and would block infantry otherwise. Placed after
+ *  the prologue (four pushes), so the cell argument is at ESP+0x34.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x004D5219, _InfantryClass_Can_Enter_Cell_SlaveMiner_Door_Patch, 5)
+{
+    GET(InfantryClass *, this_ptr, EBP);
+    GET_STACK(const CellClass *, cell, 0x34);
+
+    if (SlaveManagerClass::Can_Slave_Enter_Cell(this_ptr, cell)) {
+        return 0x004D5249; // Restores the registers and returns MOVE_OK.
+    }
+
+    return 0;
 }
 
 

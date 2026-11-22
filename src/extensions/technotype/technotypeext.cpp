@@ -12,6 +12,7 @@
 #include "technotypeext.h"
 
 #include "aircrafttype.h"
+#include "infantrytype.h"
 #include "animtype.h"
 #include "bsurface.h"
 #include "ccini.h"
@@ -122,7 +123,14 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const TechnoTypeClass *this_p
     SlaveMinerShortScan(-1),
     SlaveMinerLongScan(-1),
     SlaveMinerScanCorrection(-1),
-    SlaveMinerKickFrameDelay(-1)
+    SlaveMinerKickFrameDelay(-1),
+    IsSlaveMinerRepairable(true),
+    SlaveMinerSlave(nullptr),
+    SlaveMinerSlaveCount(5),
+    SlaveMinerRegenRate(500),
+    SlaveMinerReloadRate(25),
+    SlaveMinerSlaveScan(-1),
+    SlaveMinerHarvestRate(-1)
 {
 }
 
@@ -184,6 +192,7 @@ HRESULT TechnoTypeClassExtension::Load(IStream *pStm)
 
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(UnloadingClass, "UnloadingClass");
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(Spawns, "Spawns");
+    VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(SlaveMinerSlave, "SlaveMinerSlave");
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(WakeAnim, "WakeAnim");
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(IdleWakeAnim, "IdleWakeAnim");
 
@@ -296,6 +305,12 @@ void TechnoTypeClassExtension::Object_CRC(CRCEngine &crc) const
     crc(SlaveMinerLongScan);
     crc(SlaveMinerScanCorrection);
     crc(SlaveMinerKickFrameDelay);
+    crc(IsSlaveMinerRepairable);
+    crc(SlaveMinerSlaveCount);
+    crc(SlaveMinerRegenRate);
+    crc(SlaveMinerReloadRate);
+    crc(SlaveMinerSlaveScan);
+    crc(SlaveMinerHarvestRate);
 }
 
 
@@ -408,6 +423,13 @@ bool TechnoTypeClassExtension::Read_INI(CCINIClass &ini)
     SlaveMinerLongScan = ini.Get_Lepton(ini_name, "SlaveMiner.LongScan", SlaveMinerLongScan);
     SlaveMinerScanCorrection = ini.Get_Lepton(ini_name, "SlaveMiner.ScanCorrection", SlaveMinerScanCorrection);
     SlaveMinerKickFrameDelay = ini.Get_Int(ini_name, "SlaveMiner.KickFrameDelay", SlaveMinerKickFrameDelay);
+    IsSlaveMinerRepairable = ini.Get_Bool(ini_name, "SlaveMiner.Repairable", IsSlaveMinerRepairable);
+    SlaveMinerSlave = TGet_Class(ini, ini_name, "SlaveMiner.Slave", SlaveMinerSlave);
+    SlaveMinerSlaveCount = ini.Get_Int(ini_name, "SlaveMiner.SlaveCount", SlaveMinerSlaveCount);
+    SlaveMinerRegenRate = ini.Get_Int(ini_name, "SlaveMiner.RegenRate", SlaveMinerRegenRate);
+    SlaveMinerReloadRate = ini.Get_Int(ini_name, "SlaveMiner.ReloadRate", SlaveMinerReloadRate);
+    SlaveMinerSlaveScan = ini.Get_Lepton(ini_name, "SlaveMiner.SlaveScan", SlaveMinerSlaveScan);
+    SlaveMinerHarvestRate = ini.Get_Int(ini_name, "SlaveMiner.HarvestRate", SlaveMinerHarvestRate);
 
     RequiredHouses = ini.Get_Owners(ini_name, "RequiredHouses", RequiredHouses);
     ForbiddenHouses = ini.Get_Owners(ini_name, "ForbiddenHouses", ForbiddenHouses);

@@ -39,6 +39,7 @@
 #include "vinifera_globals.h"
 #include "wwcrc.h"
 #include "unitext.h"
+#include "slavemanager.h"
 
 static unsigned Scenario_Sync_CRC()
 {
@@ -1074,6 +1075,7 @@ DEFINE_HOOK(0x004948A5, _EventClass_Execute_QMove_Aircraft_Patch, 6)
      *  resume harvesting on its own (see UnitClassExtension::Dock_Wait_AI).
      */
     UnitClassExtension::Player_Order(this_ptr, static_cast<MissionType>(mission));
+    SlaveManagerClass::Player_Order(this_ptr);
 
     return 0;
 }

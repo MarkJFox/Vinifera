@@ -12,8 +12,9 @@
  *                 Tiberium, deploys next to it, harvests and relocates).
  *
  *                 The miner state machine follows SlaveManagerClass in Yuri's
- *                 Revenge (gamemd.exe 0x006AFD60). This first stage implements
- *                 the miner itself (seek, deploy, relocate); slaves come later.
+ *                 Revenge (gamemd.exe 0x006AFD60), the slaves follow
+ *                 UpdateSlaves (0x006AF6C0): they harvest nearby Tiberium and
+ *                 enter the deployed miner to unload it.
  *
  *  @license       Vinifera is free software: you can redistribute it and/or
  *                 modify it under the terms of the GNU General Public License
@@ -38,8 +39,12 @@
 #include "buildingext.h"
 #include "buildingtype.h"
 #include "cell.h"
+#include "debughandler.h"
 #include "extension.h"
 #include "house.h"
+#include "infantry.h"
+#include "infantrytype.h"
+#include "infantrytypeext.h"
 #include "mouse.h"
 #include "rules.h"
 #include "rulesext.h"
@@ -56,6 +61,8 @@
 
 #include <climits>
 #include <cstdlib>
+#include <cstdio>
+#include <cstdarg>
 
 
 /**
@@ -84,6 +91,161 @@ static constexpr int RELOCATION_SCAN_DELAY = 90;
  *  fields surrounded by slopes or cliffs.
  */
 static constexpr int MAX_DEPLOY_SITE_RADIUS = 12;
+
+/**
+ *  Slaves waiting for the undeployed miner keep these gaps (in cells) to the
+ *  area its building will cover: closer than KEEP_OUT they step away, within
+ *  WAIT they stop, beyond FOLLOW they walk towards it again.
+ */
+static constexpr int SLAVE_KEEP_OUT_GAP = 1;
+static constexpr int SLAVE_WAIT_GAP = 3;
+static constexpr int SLAVE_FOLLOW_GAP = 5;
+
+/**
+ *  Frames a returning slave may go without getting closer to the door before
+ *  it searches a new path, or enters from where it stands at the building.
+ */
+static constexpr int SLAVE_STUCK_DELAY = 75;
+
+/**
+ *  Frames a returning slave right next to the door may walk without stepping
+ *  in before it enters from where it stands.
+ */
+static constexpr int SLAVE_DOOR_DELAY = 30;
+
+/**
+ *  After this many stuck delays in a row, a returning slave within
+ *  SLAVE_STUCK_ENTER_GAP cells of the deployed miner enters it from where it
+ *  stands.
+ */
+static constexpr int SLAVE_STUCK_ENTER_COUNT = 3;
+static constexpr int SLAVE_STUCK_ENTER_GAP = 3;
+
+/**
+ *  Frames between two wide searches for Tiberium once the remembered field
+ *  is used up.
+ */
+static constexpr int LAST_ORE_SCAN_DELAY = 450;
+
+/**
+ *  Slave search radius when neither the type nor [General] sets one (cells, like YR).
+ */
+static constexpr int DEFAULT_SLAVE_SCAN = 14;
+
+
+/**
+ *  Frames between two overview lines per miner in the test log.
+ */
+static constexpr int LOG_SNAPSHOT_DELAY = 150;
+
+
+/**
+ *  Test log in the normal debug log, written only in developer mode. It only
+ *  reads game state, so it cannot change the game or desync it.
+ */
+static bool SlaveLogMuted = false;
+
+static bool Slave_Log_Enabled()
+{
+    return Vinifera_DeveloperMode && !SlaveLogMuted;
+}
+
+static void Slave_Log(const char *fmt, ...)
+{
+    if (!Slave_Log_Enabled()) {
+        return;
+    }
+
+    char buffer[1024];
+
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+
+    DEBUG_INFO("[SlaveMiner] {:7d} | {}\n", static_cast<int>(Frame), buffer);
+}
+
+/**
+ *  One cell for the test log: the five infantry spots (C NW NE SW SE, 1 = taken),
+ *  the vehicle, immovable and building flags, what stands there, and the height.
+ */
+static void Describe_Cell(const Cell &cell, char *buffer, int size)
+{
+    if (!Map.In_Radar(cell)) {
+        std::snprintf(buffer, size, "%d,%d outside the map", cell.X, cell.Y);
+        return;
+    }
+
+    CellClass &cellptr = Map[cell];
+    const unsigned bits = cellptr.Flag.Composite;
+
+    int infantry = 0;
+    int other = 0;
+    for (ObjectClass *object = cellptr.Cell_Occupier(); object != nullptr; object = object->Next) {
+        if (object->RTTI == RTTI_INFANTRY) {
+            ++infantry;
+        } else {
+            ++other;
+        }
+    }
+
+    BuildingClass *building = cellptr.Cell_Building();
+
+    std::snprintf(buffer, size, "%d,%d spots=%d%d%d%d%d vehicle=%d monolith=%d building=%d(%s) infantry=%d other=%d height=%d ramp=%d",
+        cell.X, cell.Y,
+        (bits >> 0) & 1, (bits >> 1) & 1, (bits >> 2) & 1, (bits >> 3) & 1, (bits >> 4) & 1,
+        (bits >> 5) & 1, (bits >> 6) & 1, (bits >> 7) & 1,
+        building != nullptr ? building->Class->Name() : "-",
+        infantry, other, cellptr.Height, cellptr.Ramp);
+}
+
+
+static const char *Slave_Status_Name(SlaveStatus status)
+{
+    switch (status) {
+        case SlaveStatus::InMiner:    return "InMiner";
+        case SlaveStatus::Seeking:    return "Seeking";
+        case SlaveStatus::Moving:     return "Moving";
+        case SlaveStatus::Harvesting: return "Harvesting";
+        case SlaveStatus::Returning:  return "Returning";
+        case SlaveStatus::Reloading:  return "Reloading";
+        case SlaveStatus::Dead:       return "Dead";
+        case SlaveStatus::Ordered:    return "Ordered";
+        default:                      return "?";
+    }
+}
+
+static const char *Manager_Status_Name(SlaveManagerStatus status)
+{
+    switch (status) {
+        case SlaveManagerStatus::Idle:        return "Idle";
+        case SlaveManagerStatus::Scanning:    return "Scanning";
+        case SlaveManagerStatus::Travelling:  return "Travelling";
+        case SlaveManagerStatus::DeployRetry: return "DeployRetry";
+        case SlaveManagerStatus::Deploying:   return "Deploying";
+        case SlaveManagerStatus::Working:     return "Working";
+        case SlaveManagerStatus::PackingUp:   return "PackingUp";
+        default:                              return "?";
+    }
+}
+
+
+/**
+ *  Cells between a cell and a rectangle of cells (0 inside it).
+ */
+static int Area_Gap(const Cell &topleft, const Cell &bottomright, const Cell &cell)
+{
+    int dx = 0;
+    if (cell.X < topleft.X) dx = topleft.X - cell.X;
+    else if (cell.X > bottomright.X) dx = cell.X - bottomright.X;
+
+    int dy = 0;
+    if (cell.Y < topleft.Y) dy = topleft.Y - cell.Y;
+    else if (cell.Y > bottomright.Y) dy = cell.Y - bottomright.Y;
+
+    return dx > dy ? dx : dy;
+}
 
 
 /**
@@ -254,7 +416,32 @@ IFACEMETHODIMP SlaveManagerClass::Load(IStream *pStm)
 
     new (this) SlaveManagerClass(NoInitClass());
 
+    int count = 0;
+    hr = pStm->Read(&count, sizeof(count), nullptr);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    new (&Slaves) DynamicVectorClass<SlaveNode *>();
+
+    for (int index = 0; index < count; ++index) {
+        SlaveNode *node = new SlaveNode;
+        hr = pStm->Read(node, sizeof(SlaveNode), nullptr);
+        if (FAILED(hr)) {
+            delete node;
+            return hr;
+        }
+        Slaves.Add(node);
+    }
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(Slaves[index]->Slave, "Slave");
+    }
+
     VINIFERA_SWIZZLE_REQUEST_POINTER_REMAP(Owner, "Owner");
+
+    IsLimboingSlave = false;
+    LastReleaseBlocker = nullptr;
 
     return hr;
 }
@@ -265,7 +452,25 @@ IFACEMETHODIMP SlaveManagerClass::Load(IStream *pStm)
  */
 IFACEMETHODIMP SlaveManagerClass::Save(IStream *pStm, BOOL fClearDirty)
 {
-    return Abstract_Save(pStm, fClearDirty);
+    HRESULT hr = Abstract_Save(pStm, fClearDirty);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    const int count = Slaves.Count();
+    hr = pStm->Write(&count, sizeof(count), nullptr);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    for (int index = 0; index < count; ++index) {
+        hr = pStm->Write(Slaves[index], sizeof(SlaveNode), nullptr);
+        if (FAILED(hr)) {
+            return hr;
+        }
+    }
+
+    return hr;
 }
 
 
@@ -285,7 +490,16 @@ SlaveManagerClass::SlaveManagerClass() :
     OrderedOre(CELL_NONE),
     DeployAttempts(0),
     HasHarvestOrder(false),
-    IsRelocating(false)
+    IsRelocating(false),
+    Slaves(),
+    IsSlavesCreated(false),
+    IsLimboingSlave(false),
+    IsAbsorbPending(false),
+    LastOre(CELL_NONE),
+    LastOreScanFrame(-1),
+    LastReleaseBlocker(nullptr),
+    LastSnapshotFrame(-LOG_SNAPSHOT_DELAY),
+    LastCellLogFrame(-LOG_SNAPSHOT_DELAY)
 {
     SlaveManagers.Add(this);
 }
@@ -297,7 +511,13 @@ SlaveManagerClass::SlaveManagerClass() :
 SlaveManagerClass::SlaveManagerClass(TechnoClass *owner) :
     SlaveManagerClass()
 {
+    /**
+     *  Not logged: a deployed or undeployed miner gets this manager only for a
+     *  moment, Transfer() replaces it with the existing one.
+     */
+    SlaveLogMuted = true;
     Set_Owner(owner);
+    SlaveLogMuted = false;
 }
 
 
@@ -308,7 +528,8 @@ SlaveManagerClass::SlaveManagerClass(const NoInitClass &noinit) :
     AbstractClass(noinit),
     Vinifera::Detach::Listener<TechnoClass>(noinit),
     LogicTimer(noinit),
-    StateTimer(noinit)
+    StateTimer(noinit),
+    Slaves(noinit)
 {
 }
 
@@ -318,6 +539,15 @@ SlaveManagerClass::SlaveManagerClass(const NoInitClass &noinit) :
  */
 SlaveManagerClass::~SlaveManagerClass()
 {
+    if (GameActive) {
+        Free_Slaves();
+    }
+
+    for (int index = Slaves.Count() - 1; index >= 0; --index) {
+        delete Slaves[index];
+    }
+    Slaves.Clear();
+
     SlaveManagers.Delete(this);
 }
 
@@ -355,6 +585,20 @@ void SlaveManagerClass::Object_CRC(CRCEngine &crc) const
     crc(DeployAttempts);
     crc(HasHarvestOrder);
     crc(IsRelocating);
+    crc(IsSlavesCreated);
+    crc(IsAbsorbPending);
+    crc(LastOre.X);
+    crc(LastOre.Y);
+    crc(Slaves.Count());
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        const SlaveNode *node = Slaves[index];
+        crc(static_cast<int>(node->Status));
+        crc(node->Target.As_Cell_Number());
+        if (node->Slave != nullptr) {
+            crc(node->Slave->Fetch_Heap_ID());
+        }
+    }
 
     if (Owner != nullptr) {
         crc(Owner->Fetch_Heap_ID());
@@ -367,8 +611,20 @@ void SlaveManagerClass::Object_CRC(CRCEngine &crc) const
  */
 void SlaveManagerClass::On_Detach(TechnoClass *target, bool all)
 {
+    if (target == nullptr) {
+        return;
+    }
+
     if (target == Owner) {
         Owner = nullptr;
+    }
+
+    /**
+     *  A slave is gone (killed or removed). The manager's own Limbo() call
+     *  when a slave enters the miner is not a loss.
+     */
+    if (!IsLimboingSlave && target->RTTI == RTTI_INFANTRY && (all || target->Strength <= 0)) {
+        Slave_Lost(static_cast<InfantryClass *>(target));
     }
 }
 
@@ -463,6 +719,26 @@ bool SlaveManagerClass::Accepts_Harvest_Order(const TechnoClass *techno)
 
 
 /**
+ *  May this deployed Slave Miner be repaired although it undeploys into a
+ *  vehicle? Read from the building type, or from the vehicle if only that
+ *  one is flagged as a Slave Miner.
+ */
+bool SlaveManagerClass::Is_Repairable(const BuildingClass *building)
+{
+    if (building == nullptr || !Is_Slave_Miner_Type(building->Class)) {
+        return false;
+    }
+
+    const TechnoTypeClassExtension *ext = Extension::Fetch(building->Class);
+    if (!ext->IsSlaveMiner && building->Class->UndeploysInto != nullptr) {
+        ext = Extension::Fetch(building->Class->UndeploysInto);
+    }
+
+    return ext->IsSlaveMinerRepairable;
+}
+
+
+/**
  *  Is this cell a valid target for a harvest order (Tiberium, not hidden under a bridge)?
  */
 bool SlaveManagerClass::Is_Harvest_Order_Cell(const Cell &cell)
@@ -481,9 +757,26 @@ bool SlaveManagerClass::Is_Harvest_Order_Cell(const Cell &cell)
  */
 void SlaveManagerClass::Set_Owner(TechnoClass *owner)
 {
+    if (owner != nullptr) {
+        const Cell cell = owner->Get_Cell();
+        Slave_Log("M%-4d |       | owner | %s %s at %d,%d", Manager_Index(),
+            owner->RTTI == RTTI_BUILDING ? "building" : "vehicle", owner->TClass->Name(), cell.X, cell.Y);
+    }
     Owner = owner;
     LogicTimer = 0;
     DeployAttempts = 0;
+
+    /**
+     *  The door moved with the miner: progress towards the old one no longer counts.
+     */
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        SlaveNode *node = Slaves[index];
+        node->BestDistance = INT_MAX;
+        node->StuckCount = 0;
+        if (node->Status == SlaveStatus::Returning) {
+            node->Timer = SLAVE_STUCK_DELAY;
+        }
+    }
 
     if (Owner == nullptr) {
         return;
@@ -497,6 +790,7 @@ void SlaveManagerClass::Set_Owner(TechnoClass *owner)
         IsRelocating = false;
         OrderedOre = CELL_NONE;
         LastRelocationScanFrame = Frame;
+        IsAbsorbPending = true;
         Set_Status(SlaveManagerStatus::Working);
 
     } else if (Owner->RTTI == RTTI_UNIT) {
@@ -541,6 +835,9 @@ void SlaveManagerClass::Stop()
  */
 void SlaveManagerClass::Set_Status(SlaveManagerStatus status)
 {
+    if (status != Status) {
+        Slave_Log("M%-4d |       | miner status | %s -> %s", Manager_Index(), Manager_Status_Name(Status), Manager_Status_Name(status));
+    }
     Status = status;
     LastScanFrame = (status == SlaveManagerStatus::Idle) ? Frame : INT_MAX;
 }
@@ -631,6 +928,10 @@ void SlaveManagerClass::AI()
         return;
     }
 
+    if (!IsSlavesCreated) {
+        Create_Slaves();
+    }
+
     /**
      *  The player (or a script) gave a harvest order. Handled right away so the
      *  vehicle does not first drive onto the clicked cell.
@@ -646,6 +947,12 @@ void SlaveManagerClass::AI()
     }
 
     LogicTimer = LOGIC_RATE;
+
+    Slaves_AI();
+
+    if (Owner == nullptr) {
+        return;
+    }
 
     switch (Status) {
         case SlaveManagerStatus::Idle:        AI_Idle(); break;
@@ -704,6 +1011,9 @@ void SlaveManagerClass::Handle_Harvest_Order()
         Stop();
         OrderedOre = ore;
         HasHarvestOrder = true;
+        if (ore != CELL_NONE) {
+            LastOre = ore;
+        }
 
         /**
          *  Leave the harvest mission in any case; Scanning gives the move order.
@@ -818,6 +1128,10 @@ void SlaveManagerClass::AI_Scanning()
      *  Lift the vehicle off the map while searching, so the cells it stands on
      *  count as free (it can deploy right where it is).
      */
+    if (ore != CELL_NONE) {
+        LastOre = ore;
+    }
+
     unit->Mark(MARK_UP);
     unit->Locomotion->Mark_All_Occupation_Bits(MARK_UP);
     const Cell site = Find_Deploy_Site(unit->Class->DeploysInto, ore, here, unit->Class->MZone);
@@ -1080,6 +1394,7 @@ bool SlaveManagerClass::Relocate(BuildingClass *building, const Cell &ore, bool 
         return false;
     }
 
+    LastOre = ore;
     DeploySite = site;
     IsRelocating = true;
 
@@ -1156,4 +1471,1036 @@ bool SlaveManagerClass::Start_Deploy()
     }
 
     return unit->Try_To_Deploy();
+}
+
+
+/**
+ *  The type extension holding the slave settings: the owner's type, or the
+ *  vehicle/building counterpart if only that one names a slave type.
+ */
+const TechnoTypeClassExtension *SlaveManagerClass::Slave_Config() const
+{
+    if (Owner == nullptr) {
+        return nullptr;
+    }
+
+    const TechnoTypeClass *type = Owner->TClass;
+    const TechnoTypeClassExtension *ext = Extension::Fetch(type);
+    if (ext->SlaveMinerSlave != nullptr) {
+        return ext;
+    }
+
+    const TechnoTypeClass *other = nullptr;
+    if (Owner->RTTI == RTTI_BUILDING) {
+        other = type->UndeploysInto;
+    } else {
+        other = type->DeploysInto;
+    }
+
+    if (other != nullptr && Extension::Fetch(other)->SlaveMinerSlave != nullptr) {
+        return Extension::Fetch(other);
+    }
+
+    return nullptr;
+}
+
+
+const InfantryTypeClass *SlaveManagerClass::Slave_Type() const
+{
+    const TechnoTypeClassExtension *config = Slave_Config();
+    return config != nullptr ? config->SlaveMinerSlave : nullptr;
+}
+
+
+int SlaveManagerClass::Slave_Scan() const
+{
+    const TechnoTypeClassExtension *config = Slave_Config();
+    if (config != nullptr && config->SlaveMinerSlaveScan >= 0) return config->SlaveMinerSlaveScan;
+    if (RuleExtension->SlaveMinerSlaveScan >= 0) return RuleExtension->SlaveMinerSlaveScan;
+    return DEFAULT_SLAVE_SCAN * CELL_LEPTON_W;
+}
+
+
+/**
+ *  Why slaves cannot leave the miner right now, or nullptr if they can.
+ */
+const char *SlaveManagerClass::Release_Blocker()
+{
+    BuildingClass *building = Owner_Building();
+    if (building == nullptr) return "miner is a vehicle";
+    if (building->IsInLimbo) return "building in limbo";
+    if (!building->IsDown) return "building not finished";
+    if (Status != SlaveManagerStatus::Working) return "miner not working";
+
+    const MissionType mission = building->Get_Mission();
+    if (mission == MISSION_CONSTRUCTION) return "building constructing";
+    if (mission == MISSION_DECONSTRUCTION) return "building packing up";
+
+    if (Find_Tiberium(Door_Cell(), Slave_Reach()) == CELL_NONE && Remembered_Ore() == CELL_NONE) {
+        return "no Tiberium in reach and none remembered";
+    }
+    return nullptr;
+}
+
+
+int SlaveManagerClass::Manager_Index() const
+{
+    return SlaveManagers.ID(const_cast<SlaveManagerClass *>(this));
+}
+
+
+void SlaveManagerClass::Log_Slave(const SlaveNode &node, const char *event, const char *details) const
+{
+    if (!Slave_Log_Enabled()) {
+        return;
+    }
+
+    int index = -1;
+    for (int i = 0; i < Slaves.Count(); ++i) {
+        if (Slaves[i] == &node) {
+            index = i;
+            break;
+        }
+    }
+
+    const InfantryClass *slave = node.Slave;
+    if (slave == nullptr) {
+        Slave_Log("M%-4d | S%-4d | %s | %s | (no slave)", Manager_Index(), index, event, details != nullptr ? details : "");
+        return;
+    }
+
+    const Cell here = slave->Get_Cell();
+    const Cell door = Door_Cell();
+    Slave_Log("M%-4d | S%-4d | %s | %s | cell %d,%d target %d,%d door %d,%d nav=%d moving=%d limbo=%d mission=%d load=%d hp=%d stuck=%d",
+        Manager_Index(), index, event, details != nullptr ? details : "",
+        here.X, here.Y, node.Target.X, node.Target.Y, door.X, door.Y,
+        slave->NavCom != nullptr, slave->Locomotion->Is_Moving() ? 1 : 0, slave->IsInLimbo ? 1 : 0,
+        slave->Get_Mission(), slave->Storage.Get_Total_Amount(), slave->Strength, node.StuckCount);
+}
+
+
+/**
+ *  Logs the door and the cells outside it, at most every 30 frames per miner.
+ */
+void SlaveManagerClass::Log_Door_Area(const SlaveNode &node, const char *event)
+{
+    if (!Slave_Log_Enabled() || Owner_Building() == nullptr || Frame < LastCellLogFrame + 30) {
+        return;
+    }
+    LastCellLogFrame = Frame;
+
+    int index = -1;
+    for (int i = 0; i < Slaves.Count(); ++i) {
+        if (Slaves[i] == &node) {
+            index = i;
+            break;
+        }
+    }
+
+    const Cell door = Door_Cell();
+    static const int _offsets[][2] = { {0,0}, {1,0}, {1,1}, {1,-1}, {0,1}, {0,-1} };
+
+    for (int i = 0; i < int(sizeof(_offsets) / sizeof(_offsets[0])); ++i) {
+        char cell_text[256];
+        Describe_Cell(Cell(door.X + _offsets[i][0], door.Y + _offsets[i][1]), cell_text, sizeof(cell_text));
+        Slave_Log("M%-4d | S%-4d | cell | %s, %s: %s", Manager_Index(), index, event, i == 0 ? "door" : "outside", cell_text);
+    }
+}
+
+
+void SlaveManagerClass::Log_Snapshot() const
+{
+    if (Owner == nullptr) {
+        return;
+    }
+
+    const Cell cell = Owner->Get_Cell();
+    Slave_Log("M%-4d |       | overview | %s %s at %d,%d, miner %s, last ore %d,%d", Manager_Index(),
+        Owner->RTTI == RTTI_BUILDING ? "building" : "vehicle", Owner->TClass->Name(), cell.X, cell.Y,
+        Manager_Status_Name(Status), LastOre.X, LastOre.Y);
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        Log_Slave(*Slaves[index], "overview", Slave_Status_Name(Slaves[index]->Status));
+    }
+}
+
+
+/**
+ *  How far from the door slaves work: their own scan, or the miner's working
+ *  radius if that is larger.
+ */
+int SlaveManagerClass::Slave_Reach() const
+{
+    const int scan = Slave_Scan();
+    const int radius = Owner != nullptr ? Harvest_Radius() : 0;
+    return scan > radius ? scan : radius;
+}
+
+
+/**
+ *  The remembered Tiberium field, or CELL_NONE. A used-up field is replaced
+ *  by Tiberium near it, or by a wide search around the miner (LongScan, at
+ *  most every LAST_ORE_SCAN_DELAY frames).
+ */
+Cell SlaveManagerClass::Remembered_Ore()
+{
+    if (LastOre != CELL_NONE && Map[LastOre].Land_Type() == LAND_TIBERIUM) {
+        return LastOre;
+    }
+
+    if (LastOre != CELL_NONE) {
+        LastOre = Find_Tiberium(LastOre, Slave_Scan());
+        if (LastOre != CELL_NONE) {
+            return LastOre;
+        }
+    }
+
+    if (Owner == nullptr || (LastOreScanFrame >= 0 && Frame < LastOreScanFrame + LAST_ORE_SCAN_DELAY)) {
+        return CELL_NONE;
+    }
+
+    LastOreScanFrame = Frame;
+    LastOre = Find_Tiberium(Owner->Get_Cell(), Long_Scan());
+    return LastOre;
+}
+
+
+int SlaveManagerClass::Slave_Harvest_Rate(const InfantryClass *slave) const
+{
+    const int value = Extension::Fetch(slave->Class)->SlaveMinerHarvestRate;
+    return value >= 0 ? value : RuleExtension->SlaveMinerHarvestRate;
+}
+
+
+/**
+ *  Number of living slaves.
+ */
+int SlaveManagerClass::Slave_Count() const
+{
+    int count = 0;
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        if (Slaves[index]->Slave != nullptr) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+
+SlaveManagerClass::SlaveNode *SlaveManagerClass::Find_Node(const InfantryClass *slave) const
+{
+    if (slave == nullptr) {
+        return nullptr;
+    }
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        if (Slaves[index]->Slave == slave) {
+            return Slaves[index];
+        }
+    }
+    return nullptr;
+}
+
+
+/**
+ *  The cell the slaves leave and enter the deployed miner through: the middle
+ *  of its right edge (like YR). For the vehicle, the cell it stands on.
+ */
+Cell SlaveManagerClass::Door_Cell() const
+{
+    BuildingClass *building = Owner_Building();
+    if (building != nullptr) {
+        const Cell origin = building->Get_Cell();
+        return Cell(origin.X + building->Class->Width() - 1, origin.Y + building->Class->Height() / 2);
+    }
+
+    return Owner != nullptr ? Owner->Get_Cell() : CELL_NONE;
+}
+
+
+/**
+ *  Slaves only come out of a deployed miner that is working.
+ */
+bool SlaveManagerClass::Can_Release_Slaves() const
+{
+    BuildingClass *building = Owner_Building();
+    if (building == nullptr || building->IsInLimbo || !building->IsDown) {
+        return false;
+    }
+
+    if (Status != SlaveManagerStatus::Working) {
+        return false;
+    }
+
+    const MissionType mission = building->Get_Mission();
+    return mission != MISSION_CONSTRUCTION && mission != MISSION_DECONSTRUCTION;
+}
+
+
+/**
+ *  Can this infantry enter this cell because it is one of our slaves walking
+ *  into the miner's door? Called from InfantryClass::Can_Enter_Cell, so the
+ *  path finder and the walk locomotor both let the slave in.
+ */
+bool SlaveManagerClass::Can_Slave_Enter_Cell(const InfantryClass *infantry, const CellClass *cell)
+{
+    if (SlaveManagers.Count() == 0 || infantry == nullptr || cell == nullptr) {
+        return false;
+    }
+
+    BuildingClass *building = cell->Cell_Building();
+    if (building == nullptr) {
+        return false;
+    }
+
+    SlaveManagerClass *manager = Extension::Fetch(building)->SlaveManager;
+    if (manager == nullptr || manager->Owner != building) {
+        return false;
+    }
+
+    if (cell->Fetch_CellID() != manager->Door_Cell()) {
+        return false;
+    }
+
+    return manager->Find_Node(infantry) != nullptr;
+}
+
+
+/**
+ *  The player gave one of our slaves an order: it obeys and goes back to work
+ *  once it is idle again.
+ */
+void SlaveManagerClass::Player_Order(TechnoClass *techno)
+{
+    if (techno == nullptr || techno->RTTI != RTTI_INFANTRY) {
+        return;
+    }
+
+    const InfantryClass *infantry = static_cast<const InfantryClass *>(techno);
+
+    for (int index = 0; index < SlaveManagers.Count(); ++index) {
+        SlaveNode *node = SlaveManagers[index]->Find_Node(infantry);
+        if (node == nullptr) {
+            continue;
+        }
+
+        if (node->Status != SlaveStatus::InMiner && node->Status != SlaveStatus::Reloading && node->Status != SlaveStatus::Dead) {
+            SlaveManagers[index]->Log_Slave(*node, "player order", Slave_Status_Name(node->Status));
+            node->Status = SlaveStatus::Ordered;
+            node->Target = CELL_NONE;
+        }
+        return;
+    }
+}
+
+
+/**
+ *  Makes one slave, inside the miner (limbo).
+ */
+static InfantryClass *Make_Slave(const InfantryTypeClass *type, HouseClass *house, bool &limbo_guard)
+{
+    if (type == nullptr || house == nullptr) {
+        return nullptr;
+    }
+
+    InfantryClass *slave = static_cast<InfantryClass *>(type->Create_One_Of(house));
+    if (slave != nullptr && !slave->IsInLimbo) {
+        limbo_guard = true;
+        slave->Limbo();
+        limbo_guard = false;
+    }
+    return slave;
+}
+
+
+/**
+ *  Creates the slaves (inside the miner) on the first logic tick.
+ */
+void SlaveManagerClass::Create_Slaves()
+{
+    IsSlavesCreated = true;
+
+    const TechnoTypeClassExtension *config = Slave_Config();
+    if (config == nullptr || config->SlaveMinerSlave == nullptr || Owner == nullptr) {
+        return;
+    }
+
+    for (int index = 0; index < config->SlaveMinerSlaveCount; ++index) {
+
+        SlaveNode *node = new SlaveNode;
+        node->Slave = Make_Slave(config->SlaveMinerSlave, Owner->House, IsLimboingSlave);
+        node->Status = node->Slave != nullptr ? SlaveStatus::InMiner : SlaveStatus::Dead;
+        node->Timer = node->Slave != nullptr ? 0 : config->SlaveMinerRegenRate;
+        node->Target = CELL_NONE;
+        node->BestDistance = INT_MAX;
+        node->StuckCount = 0;
+
+        Slaves.Add(node);
+    }
+}
+
+
+/**
+ *  The miner is gone: slaves inside it die with it, slaves outside stay with
+ *  their house as ordinary infantry.
+ */
+void SlaveManagerClass::Free_Slaves()
+{
+    for (int index = 0; index < Slaves.Count(); ++index) {
+
+        SlaveNode *node = Slaves[index];
+        InfantryClass *slave = node->Slave;
+
+        node->Slave = nullptr;
+        node->Status = SlaveStatus::Dead;
+
+        if (slave == nullptr) {
+            continue;
+        }
+
+        if (slave->IsInLimbo) {
+            slave->Delete_Me();
+        } else if (slave->IsActive && slave->Strength > 0) {
+            slave->Assign_Destination(nullptr);
+            slave->Assign_Mission(MISSION_GUARD);
+            slave->Commence();
+        }
+    }
+}
+
+
+/**
+ *  A slave died or was removed; replace it after the regen time.
+ */
+void SlaveManagerClass::Slave_Lost(InfantryClass *slave)
+{
+    SlaveNode *node = Find_Node(slave);
+    if (node == nullptr) {
+        return;
+    }
+
+    const TechnoTypeClassExtension *config = Slave_Config();
+
+    Log_Slave(*node, "lost", slave->Strength <= 0 ? "killed" : "removed (deleted, or the game ended)");
+
+    node->Slave = nullptr;
+    node->Status = SlaveStatus::Dead;
+    node->Target = CELL_NONE;
+    node->Timer = config != nullptr ? config->SlaveMinerRegenRate : 0;
+}
+
+
+bool SlaveManagerClass::Is_Slave_Full(const InfantryClass *slave) const
+{
+    const int capacity = slave->Class->Storage > 0 ? slave->Class->Storage : 1;
+    return slave->Storage.Get_Total_Amount() >= capacity;
+}
+
+
+void SlaveManagerClass::Slave_Move(SlaveNode &node, const Cell &cell)
+{
+    InfantryClass *slave = node.Slave;
+
+    node.Target = cell;
+    slave->Assign_Target(nullptr);
+    slave->Assign_Destination(&Map[cell]);
+    slave->Assign_Mission(MISSION_MOVE);
+    slave->Commence();
+}
+
+
+void SlaveManagerClass::Slaves_AI()
+{
+    if (IsAbsorbPending) {
+        Absorb_Slaves();
+    }
+
+    if (Slave_Log_Enabled() && Frame >= LastSnapshotFrame + LOG_SNAPSHOT_DELAY) {
+        LastSnapshotFrame = Frame;
+        Log_Snapshot();
+    }
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        SlaveNode &node = *Slaves[index];
+        const SlaveStatus old_status = node.Status;
+        const InfantryClass *old_slave = node.Slave;
+
+        Slave_AI(node);
+
+        if (Slave_Log_Enabled() && (node.Status != old_status || node.Slave != old_slave)) {
+            char details[64];
+            std::snprintf(details, sizeof(details), "%s -> %s", Slave_Status_Name(old_status), Slave_Status_Name(node.Status));
+            Log_Slave(node, "status", details);
+        }
+
+        if (Owner == nullptr) {
+            return;
+        }
+    }
+}
+
+
+/**
+ *  One slave (UpdateSlaves in YR).
+ */
+void SlaveManagerClass::Slave_AI(SlaveNode &node)
+{
+    InfantryClass *slave = node.Slave;
+
+    /**
+     *  Dead: a replacement appears inside the miner after the regen time.
+     */
+    if (slave == nullptr) {
+        node.Status = SlaveStatus::Dead;
+        if (node.Timer.Expired()) {
+            node.Slave = Make_Slave(Slave_Type(), Owner->House, IsLimboingSlave);
+            if (node.Slave != nullptr) {
+                node.Status = SlaveStatus::InMiner;
+                node.Target = CELL_NONE;
+            }
+        }
+        return;
+    }
+
+    if (!slave->IsActive || slave->Strength <= 0) {
+        return;
+    }
+
+    const bool busy = slave->NavCom != nullptr || slave->Locomotion->Is_Moving();
+
+    switch (node.Status) {
+
+        case SlaveStatus::InMiner:
+            if (!slave->IsInLimbo) {
+                node.Status = SlaveStatus::Seeking;
+                break;
+            }
+        {
+            const char *blocker = Release_Blocker();
+            if (blocker != LastReleaseBlocker) {
+                LastReleaseBlocker = blocker;
+                Slave_Log("M%-4d |       | release | %s", Manager_Index(), blocker != nullptr ? blocker : "allowed");
+            }
+            if (blocker == nullptr && Slave_Exit(node)) {
+                Slave_Seek(node);
+            }
+            break;
+        }
+
+        case SlaveStatus::Reloading:
+            if (node.Timer.Expired()) {
+                slave->Strength = slave->Class->MaxStrength;
+                node.Status = SlaveStatus::InMiner;
+            }
+            break;
+
+        case SlaveStatus::Seeking:
+            if (!slave->IsInLimbo) {
+                Slave_Seek(node);
+            }
+            break;
+
+        case SlaveStatus::Moving:
+            if (slave->IsInLimbo) {
+                node.Status = SlaveStatus::Ordered;
+                break;
+            }
+            if (busy) {
+                break;
+            }
+            if (Map[slave->Get_Cell()].Land_Type() == LAND_TIBERIUM) {
+                node.Status = SlaveStatus::Harvesting;
+                node.Timer = Slave_Harvest_Rate(slave);
+            } else {
+                Slave_Seek(node);
+            }
+            break;
+
+        case SlaveStatus::Harvesting:
+        {
+            if (slave->IsInLimbo) {
+                node.Status = SlaveStatus::Ordered;
+                break;
+            }
+            if (busy) {
+                break;
+            }
+            if (Is_Slave_Full(slave)) {
+                Slave_Return(node);
+                break;
+            }
+
+            CellClass &cell = Map[slave->Get_Cell()];
+            if (cell.Land_Type() != LAND_TIBERIUM) {
+                Slave_Seek(node);
+                break;
+            }
+
+            if (!node.Timer.Expired()) {
+                break;
+            }
+
+            const TiberiumType tiberium = cell.Tiberium_Type_Here();
+            const int amount = cell.Reduce_Tiberium(1);
+            if (amount <= 0) {
+                Slave_Seek(node);
+                break;
+            }
+
+            slave->Storage.Increase_Amount(amount, tiberium);
+            node.Timer = Slave_Harvest_Rate(slave);
+            LastOre = slave->Get_Cell();
+
+            if (Is_Slave_Full(slave)) {
+                Slave_Return(node);
+            }
+            break;
+        }
+
+        case SlaveStatus::Returning:
+            if (slave->IsInLimbo) {
+                node.Status = SlaveStatus::Ordered;
+                break;
+            }
+            Slave_Return(node);
+            break;
+
+        case SlaveStatus::Ordered:
+            if (slave->IsInLimbo || busy || slave->TarCom != nullptr) {
+                break;
+            }
+            if (slave->Get_Mission() == MISSION_GUARD || slave->Get_Mission() == MISSION_GUARD_AREA) {
+                Slave_Seek(node);
+            }
+            break;
+
+        default:
+            node.Status = SlaveStatus::Seeking;
+            break;
+    }
+}
+
+
+/**
+ *  Looks for Tiberium around the slave. Full, or nothing found: back to the miner.
+ */
+void SlaveManagerClass::Slave_Seek(SlaveNode &node)
+{
+    InfantryClass *slave = node.Slave;
+
+    if (Is_Slave_Full(slave)) {
+        Slave_Return(node);
+        return;
+    }
+
+    const Cell here = slave->Get_Cell();
+    Cell ore = Find_Tiberium(here, Slave_Scan());
+    const char *source = "near slave";
+
+    /**
+     *  The miner may stand farther from the field than the slave's own scan
+     *  reaches; then search from the door as far as the miner works.
+     */
+    if (ore == CELL_NONE && Owner_Building() != nullptr) {
+        ore = Find_Tiberium(Door_Cell(), Slave_Reach());
+        source = "near door";
+    }
+
+    /**
+     *  Nothing within reach: walk to the remembered field and search there.
+     */
+    if (ore == CELL_NONE) {
+        ore = Remembered_Ore();
+        source = "remembered field";
+    }
+
+    if (Slave_Log_Enabled()) {
+        char details[80];
+        if (ore == CELL_NONE) {
+            std::snprintf(details, sizeof(details), "no Tiberium found, going back");
+        } else {
+            std::snprintf(details, sizeof(details), "ore %d,%d (%s)", ore.X, ore.Y, source);
+        }
+        Log_Slave(node, "seek", details);
+    }
+
+    if (ore == CELL_NONE) {
+        Slave_Return(node);
+        return;
+    }
+
+    if (ore == here) {
+        slave->Assign_Destination(nullptr);
+        slave->Assign_Mission(MISSION_GUARD);
+        node.Target = here;
+        node.Status = SlaveStatus::Harvesting;
+        node.Timer = Slave_Harvest_Rate(slave);
+        return;
+    }
+
+    Slave_Move(node, ore);
+    node.Status = SlaveStatus::Moving;
+}
+
+
+/**
+ *  Walks the slave back to the miner. The deployed miner is entered through
+ *  its door; at the vehicle the slave waits outside until it has deployed.
+ */
+void SlaveManagerClass::Slave_Return(SlaveNode &node)
+{
+    if (node.Status != SlaveStatus::Returning) {
+        node.Status = SlaveStatus::Returning;
+        node.BestDistance = INT_MAX;
+        node.StuckCount = 0;
+        node.Timer = SLAVE_STUCK_DELAY;
+    }
+
+    if (Owner == nullptr || Owner->IsInLimbo) {
+        return;
+    }
+
+    if (Owner_Building() != nullptr) {
+        Slave_Return_To_Building(node);
+    } else {
+        Slave_Wait_For_Vehicle(node);
+    }
+}
+
+
+void SlaveManagerClass::Slave_Return_To_Building(SlaveNode &node)
+{
+    InfantryClass *slave = node.Slave;
+
+    if (Is_On_Miner(slave)) {
+        Slave_Enter(node, "stepped onto the miner");
+        return;
+    }
+
+    const Cell here = slave->Get_Cell();
+    const Cell door = Door_Cell();
+    const bool moving = slave->Locomotion->Is_Moving();
+    const bool busy = slave->NavCom != nullptr || moving;
+
+    const int distance = Cell_Distance(here, door);
+    if (distance < node.BestDistance) {
+        node.BestDistance = distance;
+        node.StuckCount = 0;
+        node.Timer = SLAVE_STUCK_DELAY;
+    }
+
+    /**
+     *  Standing at the building but not getting in (door blocked or not
+     *  reachable): enter right away next to the door, elsewhere along the
+     *  building after the stuck delay.
+     */
+    /**
+     *  Right next to the door: enter when standing, or when still walking
+     *  without stepping in for SLAVE_DOOR_DELAY frames (door blocked).
+     */
+    const bool at_door = distance <= CELL_LEPTON_W && Is_Next_To_Miner(here);
+    if (at_door && !moving) {
+        Slave_Enter(node, "standing next to the door");
+        return;
+    }
+    if (at_door && node.Timer.Value() <= SLAVE_STUCK_DELAY - SLAVE_DOOR_DELAY) {
+        Log_Door_Area(node, "door blocked");
+        Slave_Enter(node, "blocked next to the door");
+        return;
+    }
+
+    if (!moving && Is_Next_To_Miner(here) && node.Timer.Expired()) {
+        Slave_Enter(node, "stuck at the building");
+        return;
+    }
+
+    if (node.Timer.Expired()) {
+
+        /**
+         *  Repeatedly stuck close to the miner: enter from here.
+         */
+        BuildingClass *building = Owner_Building();
+        const Cell topleft = building->Get_Cell();
+        const Cell bottomright(topleft.X + building->Class->Width() - 1, topleft.Y + building->Class->Height() - 1);
+        const int gap = Area_Gap(topleft, bottomright, here);
+        ++node.StuckCount;
+
+        if (Slave_Log_Enabled()) {
+            char details[80];
+            std::snprintf(details, sizeof(details), "no progress, distance to door %d cells, gap to building %d",
+                distance / CELL_LEPTON_W, gap);
+            Log_Slave(node, "stuck", details);
+            if (distance <= 2 * CELL_LEPTON_W) {
+                Log_Door_Area(node, "stuck");
+            }
+        }
+
+        if (node.StuckCount >= SLAVE_STUCK_ENTER_COUNT && gap <= SLAVE_STUCK_ENTER_GAP) {
+            Slave_Enter(node, "stuck repeatedly near the building");
+            return;
+        }
+
+        node.Timer = SLAVE_STUCK_DELAY;
+        Slave_Move(node, door);
+        return;
+    }
+
+    if (!busy || node.Target != door) {
+        Slave_Move(node, door);
+    }
+}
+
+
+/**
+ *  The vehicle cannot be entered. The slave keeps clear of the area the
+ *  building will cover (at the deploy site while travelling there), so it
+ *  never blocks deploying, and follows when the vehicle moves away.
+ */
+void SlaveManagerClass::Slave_Wait_For_Vehicle(SlaveNode &node)
+{
+    InfantryClass *slave = node.Slave;
+    const Cell here = slave->Get_Cell();
+    const bool busy = slave->NavCom != nullptr || slave->Locomotion->Is_Moving();
+
+    Cell topleft;
+    Cell bottomright;
+    Planned_Footprint(topleft, bottomright);
+
+    const int gap = Area_Gap(topleft, bottomright, here);
+    const bool heading_in = node.Target != CELL_NONE && Area_Gap(topleft, bottomright, node.Target) <= SLAVE_KEEP_OUT_GAP;
+
+    if (gap <= SLAVE_KEEP_OUT_GAP) {
+        if (busy && !heading_in) {
+            return;
+        }
+
+        /**
+         *  Step away from the middle of the area, a few cells past its edge.
+         */
+        const int cx = (topleft.X + bottomright.X) / 2;
+        const int cy = (topleft.Y + bottomright.Y) / 2;
+        int sx = here.X > cx ? 1 : (here.X < cx ? -1 : 0);
+        const int sy = here.Y > cy ? 1 : (here.Y < cy ? -1 : 0);
+        if (sx == 0 && sy == 0) {
+            sx = 1;
+        }
+
+        const int margin = SLAVE_KEEP_OUT_GAP + 2;
+        Cell away(
+            sx > 0 ? bottomright.X + margin : (sx < 0 ? topleft.X - margin : here.X),
+            sy > 0 ? bottomright.Y + margin : (sy < 0 ? topleft.Y - margin : here.Y));
+
+        away = Map.Nearby_Location(away, slave->Class->Speed);
+        const bool ok = away != CELL_NONE && Area_Gap(topleft, bottomright, away) > SLAVE_KEEP_OUT_GAP;
+
+        if (Slave_Log_Enabled()) {
+            char details[96];
+            std::snprintf(details, sizeof(details), "too close (gap %d) to area %d,%d-%d,%d, step away to %d,%d%s",
+                gap, topleft.X, topleft.Y, bottomright.X, bottomright.Y, away.X, away.Y, ok ? "" : " (no free cell)");
+            Log_Slave(node, "wait", details);
+        }
+
+        if (ok) {
+            Slave_Move(node, away);
+        }
+        return;
+    }
+
+    if (gap <= SLAVE_WAIT_GAP) {
+        if (slave->NavCom != nullptr && heading_in) {
+            Log_Slave(node, "wait", "close enough to the vehicle, stop");
+            node.Target = CELL_NONE;
+            slave->Assign_Destination(nullptr);
+            slave->Assign_Mission(MISSION_GUARD);
+            slave->Commence();
+        }
+        return;
+    }
+
+    if (gap > SLAVE_FOLLOW_GAP && (!busy || !heading_in)) {
+        Log_Slave(node, "wait", "vehicle too far, follow");
+        Slave_Move(node, Cell((topleft.X + bottomright.X) / 2, (topleft.Y + bottomright.Y) / 2));
+    }
+}
+
+
+/**
+ *  Cells the undeployed miner's building will cover: at the deploy site while
+ *  travelling there, otherwise where the vehicle stands now.
+ */
+void SlaveManagerClass::Planned_Footprint(Cell &topleft, Cell &bottomright) const
+{
+    UnitClass *unit = Owner_Unit();
+    Cell stand = Owner != nullptr ? Owner->Get_Cell() : CELL_NONE;
+
+    const bool to_site = Status == SlaveManagerStatus::Travelling
+        || Status == SlaveManagerStatus::DeployRetry
+        || Status == SlaveManagerStatus::Deploying;
+    if (to_site && DeploySite != CELL_NONE) {
+        stand = DeploySite;
+    }
+
+    BuildingTypeClass *buildingtype = unit != nullptr ? unit->Class->DeploysInto : nullptr;
+    if (buildingtype == nullptr) {
+        topleft = stand;
+        bottomright = stand;
+        return;
+    }
+
+    topleft = buildingtype->Is_Deployable() ? stand : Adjacent_Cell(stand, FACING_NW);
+    bottomright = Cell(topleft.X + buildingtype->Width() - 1, topleft.Y + buildingtype->Height() - 1);
+}
+
+
+/**
+ *  Does the cell touch the deployed miner (one of its eight neighbours is a
+ *  cell of the building)?
+ */
+bool SlaveManagerClass::Is_Next_To_Miner(const Cell &cell) const
+{
+    BuildingClass *building = Owner_Building();
+    if (building == nullptr) {
+        return false;
+    }
+
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            const Cell next(cell.X + x, cell.Y + y);
+            if (Map.In_Radar(next) && Map[next].Cell_Building() == building) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+
+/**
+ *  Is the slave standing on one of the deployed miner's cells?
+ */
+bool SlaveManagerClass::Is_On_Miner(const InfantryClass *slave) const
+{
+    BuildingClass *building = Owner_Building();
+    return building != nullptr && !slave->IsInLimbo && Map[slave->Get_Cell()].Cell_Building() == building;
+}
+
+
+/**
+ *  The miner just deployed: slaves the building was placed on go inside.
+ */
+void SlaveManagerClass::Absorb_Slaves()
+{
+    if (Owner_Building() == nullptr || Owner->IsInLimbo) {
+        return;
+    }
+
+    IsAbsorbPending = false;
+
+    for (int index = 0; index < Slaves.Count(); ++index) {
+        SlaveNode &node = *Slaves[index];
+        InfantryClass *slave = node.Slave;
+        if (slave != nullptr && slave->IsActive && slave->Strength > 0 && Is_On_Miner(slave)) {
+            Slave_Enter(node, "building deployed on it");
+        }
+    }
+}
+
+
+/**
+ *  The slave enters the miner: its load is credited to the house like a
+ *  harvester unloading at a refinery, then it waits inside and is healed.
+ */
+void SlaveManagerClass::Slave_Enter(SlaveNode &node, const char *reason)
+{
+    InfantryClass *slave = node.Slave;
+
+    Log_Slave(node, "enter", reason);
+    HouseClass *house = Owner->House;
+
+    for (int index = 0; index < Tiberiums.Count(); ++index) {
+        const TiberiumType tiberium = static_cast<TiberiumType>(index);
+        const int amount = slave->Storage.Get_Amount(tiberium);
+        if (amount > 0) {
+            house->Tiberium_Harvested(amount, tiberium);
+            slave->Storage.Decrease_Amount(amount, tiberium);
+        }
+    }
+
+    /**
+     *  Limbo() does not release an infantry's spot in its cell (TS only does
+     *  that for other objects), so free it first, like ObjectClass::Fall_From_Height;
+     *  otherwise the door fills up with spots nobody stands on.
+     */
+    if (slave->Locomotion->Is_Moving()) {
+        slave->Locomotion->Mark_All_Occupation_Bits(MARK_UP);
+
+        /**
+         *  Limbo() keeps a step that is under way; after Unlimbo() the slave
+         *  would finish it instead of starting a new one, and the spot it
+         *  appeared on would stay taken. Drop the step and the destination.
+         */
+        slave->Locomotion->Stop_Moving();
+        slave->Locomotion->Force_Immediate_Destination(COORD_NONE);
+    } else {
+        Coord coord = slave->Get_Coord();
+        slave->Clear_Occupy_Bit(coord);
+    }
+
+    slave->Assign_Target(nullptr);
+    slave->Assign_Destination(nullptr);
+    slave->Assign_Mission(MISSION_GUARD);
+
+    IsLimboingSlave = true;
+    slave->Limbo();
+    IsLimboingSlave = false;
+
+    const TechnoTypeClassExtension *config = Slave_Config();
+
+    node.Target = CELL_NONE;
+    node.Status = SlaveStatus::Reloading;
+    node.Timer = config != nullptr ? config->SlaveMinerReloadRate : 0;
+}
+
+
+/**
+ *  The slave leaves the deployed miner through its door cell.
+ */
+bool SlaveManagerClass::Slave_Exit(SlaveNode &node)
+{
+    InfantryClass *slave = node.Slave;
+    const Cell door = Door_Cell();
+
+    /**
+     *  The door first; if it is full (three infantry per cell) or blocked,
+     *  the cells right outside it.
+     */
+    static const int _offsets[][2] = { {0,0}, {1,0}, {1,1}, {1,-1}, {0,1}, {0,-1} };
+    static const int _count = sizeof(_offsets) / sizeof(_offsets[0]);
+
+    bool placed = false;
+    for (int index = 0; index < _count && !placed; ++index) {
+        const Cell cell(door.X + _offsets[index][0], door.Y + _offsets[index][1]);
+        if (!Map.In_Local_Radar(cell)) {
+            continue;
+        }
+        if (index > 0 && Map[cell].Cell_Building() != nullptr) {
+            continue;
+        }
+
+        Coord coord = Map[cell].Center_Coord();
+        coord.Z = Map.Get_Height_GL(coord);
+        placed = slave->Unlimbo(coord, DIR_E);
+    }
+
+    if (!placed) {
+        Log_Slave(node, "exit", "failed: door and the cells outside it are full or blocked");
+        Log_Door_Area(node, "exit failed");
+        return false;
+    }
+
+    Log_Slave(node, "exit", "left the miner");
+
+    node.Target = CELL_NONE;
+    node.Status = SlaveStatus::Seeking;
+    return true;
 }

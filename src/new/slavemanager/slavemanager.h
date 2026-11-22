@@ -34,6 +34,7 @@
 #include "ftimer.h"
 #include "tibsun_defines.h"
 #include "vinifera_defines.h"
+#include "vector.h"
 
 
 class TechnoClass;
@@ -41,6 +42,9 @@ class TechnoTypeClass;
 class TechnoTypeClassExtension;
 class UnitClass;
 class BuildingClass;
+class InfantryClass;
+class InfantryTypeClass;
+class CellClass;
 class CRCEngine;
 
 
@@ -59,6 +63,22 @@ enum class SlaveManagerStatus {
 };
 
 
+/**
+ *  States of a single slave. The numbering follows SlaveManagerClass::UpdateSlaves
+ *  in Yuri's Revenge (gamemd.exe 0x006AF6C0); Ordered is new.
+ */
+enum class SlaveStatus {
+    InMiner = 0,        // Inside the miner (limbo), waits until the miner works.
+    Seeking = 1,        // Looks for Tiberium around itself.
+    Moving = 2,         // Walks to the Tiberium cell.
+    Harvesting = 3,     // Harvests until full or the cell is empty.
+    Returning = 4,      // Walks back and enters the miner to unload.
+    Reloading = 5,      // Inside the miner after unloading; healed when done.
+    Dead = 6,           // Waits for the replacement.
+    Ordered = 7         // Follows a player order; resumes work once idle.
+};
+
+
 class DECLSPEC_UUID(UUID_SLAVE_MANAGER)
     SlaveManagerClass : public AbstractClass,
                         public Vinifera::Detach::Listener<TechnoClass>
@@ -74,6 +94,17 @@ public:
      */
     IFACEMETHOD(Load)(IStream *pStm);
     IFACEMETHOD(Save)(IStream *pStm, BOOL fClearDirty);
+
+public:
+    struct SlaveNode
+    {
+        InfantryClass *Slave;
+        SlaveStatus Status;
+        CDTimerClass<FrameTimerClass> Timer;
+        Cell Target;
+        int BestDistance;   // Closest the slave got to the door while returning (leptons).
+        int StuckCount;     // Times in a row the returning slave made no progress.
+    };
 
 public:
     SlaveManagerClass();
@@ -104,6 +135,11 @@ public:
     static bool Should_Undeploy(const BuildingClass *building);
     static bool Accepts_Harvest_Order(const TechnoClass *techno);
     static bool Is_Harvest_Order_Cell(const Cell &cell);
+    static bool Can_Slave_Enter_Cell(const InfantryClass *infantry, const CellClass *cell);
+    static void Player_Order(TechnoClass *techno);
+    static bool Is_Repairable(const BuildingClass *building);
+
+    int Slave_Count() const;
 
     SlaveManagerClass(const SlaveManagerClass &) = delete;
     SlaveManagerClass &operator=(const SlaveManagerClass &) = delete;
@@ -126,6 +162,39 @@ private:
     bool Start_Deploy();
     bool Was_Given_Other_Order(const UnitClass *unit) const;
     void Check_Relocation(BuildingClass *building);
+
+    void Create_Slaves();
+    void Free_Slaves();
+    void Slaves_AI();
+    void Slave_AI(SlaveNode &node);
+    void Slave_Seek(SlaveNode &node);
+    void Slave_Return(SlaveNode &node);
+    void Slave_Enter(SlaveNode &node, const char *reason);
+    void Absorb_Slaves();
+    void Slave_Return_To_Building(SlaveNode &node);
+    void Slave_Wait_For_Vehicle(SlaveNode &node);
+    bool Is_Next_To_Miner(const Cell &cell) const;
+    void Planned_Footprint(Cell &topleft, Cell &bottomright) const;
+    int Slave_Reach() const;
+    Cell Remembered_Ore();
+    const char *Release_Blocker();
+    int Manager_Index() const;
+    void Log_Slave(const SlaveNode &node, const char *event, const char *details = nullptr) const;
+    void Log_Snapshot() const;
+    void Log_Door_Area(const SlaveNode &node, const char *event);
+    bool Is_On_Miner(const InfantryClass *slave) const;
+    bool Slave_Exit(SlaveNode &node);
+    void Slave_Lost(InfantryClass *slave);
+    void Slave_Move(SlaveNode &node, const Cell &cell);
+    bool Is_Slave_Full(const InfantryClass *slave) const;
+    bool Can_Release_Slaves() const;
+    Cell Door_Cell() const;
+    SlaveNode *Find_Node(const InfantryClass *slave) const;
+
+    const TechnoTypeClassExtension *Slave_Config() const;
+    const InfantryTypeClass *Slave_Type() const;
+    int Slave_Scan() const;
+    int Slave_Harvest_Rate(const InfantryClass *slave) const;
 
     UnitClass *Owner_Unit() const;
     BuildingClass *Owner_Building() const;
@@ -194,4 +263,47 @@ public:
      *  Did the manager itself start the current undeploy (to relocate)?
      */
     bool IsRelocating;
+
+    /**
+     *  The slaves (also the dead ones, waiting to be replaced).
+     */
+    DynamicVectorClass<SlaveNode *> Slaves;
+
+    /**
+     *  Were the slaves created yet? They are made on the first logic tick,
+     *  so a manager that is replaced right away (Transfer) creates none.
+     */
+    bool IsSlavesCreated;
+
+    /**
+     *  Set while the manager itself puts a slave into limbo, so the detach
+     *  notification of that call is not taken as the slave's death.
+     */
+    bool IsLimboingSlave;
+
+    /**
+     *  Set when the miner deployed: slaves standing on the new building's
+     *  cells are taken in on the next logic tick.
+     */
+    bool IsAbsorbPending;
+
+    /**
+     *  The last Tiberium cell the miner knows of (harvested by a slave, or the
+     *  target of a harvest order or relocation). Slaves walk there when no
+     *  Tiberium is within their reach.
+     */
+    Cell LastOre;
+
+    /**
+     *  Frame of the last wide search for Tiberium after LastOre ran out.
+     */
+    int LastOreScanFrame;
+
+    /**
+     *  Test log only (SlaveMinerLog): why slaves were last kept inside, and
+     *  when the last overview was written. No influence on the game.
+     */
+    const char *LastReleaseBlocker;
+    int LastSnapshotFrame;
+    int LastCellLogFrame;
 };

@@ -2478,6 +2478,26 @@ DEFINE_HOOK(0x004306C8, _BuildingClass_Mission_Deconstruction_SlaveMiner_Undeplo
  *  out as the archive target first, then the mission event; both are
  *  processed in order on every machine. The original code then returns true.
  */
+/**
+ *  Slave Miner: BuildingClass::Can_Repair refuses buildings that count as
+ *  vehicles (UndeploysInto). A deployed Slave Miner with SlaveMiner.Repairable
+ *  continues to the normal TechnoClass::Can_Repair check instead.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00436B78, _BuildingClass_Can_Repair_SlaveMiner_Patch, 6)
+{
+    GET(BuildingClass *, this_ptr, ESI);
+    GET(unsigned, considered_vehicle, EAX);
+
+    if ((considered_vehicle & 0xFF) == 0 || SlaveManagerClass::Is_Repairable(this_ptr)) {
+        return 0x00436B80; // TechnoClass::Can_Repair
+    }
+
+    return 0x00436B7C; // return false
+}
+
+
 DEFINE_HOOK(0x0042C210, _BuildingClass_Active_Click_With_SlaveMiner_Harvest_Patch, 7)
 {
     GET(BuildingClass *, this_ptr, ECX);
