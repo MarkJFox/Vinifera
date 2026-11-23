@@ -2483,6 +2483,10 @@ DEFINE_HOOK(0x004306C8, _BuildingClass_Mission_Deconstruction_SlaveMiner_Undeplo
  *  vehicles (UndeploysInto). A deployed Slave Miner with SlaveMiner.Repairable
  *  continues to the normal TechnoClass::Can_Repair check instead.
  *
+ *  The 6 patched bytes are "test al,al / je 0x00436B80 / xor al,al", so the
+ *  false path cannot return to 0x00436B7C (the jump's tail is there now):
+ *  it clears AL here and continues at "pop esi / ret".
+ *
  *  @author: Aftermath
  */
 DEFINE_HOOK(0x00436B78, _BuildingClass_Can_Repair_SlaveMiner_Patch, 6)
@@ -2494,7 +2498,8 @@ DEFINE_HOOK(0x00436B78, _BuildingClass_Can_Repair_SlaveMiner_Patch, 6)
         return 0x00436B80; // TechnoClass::Can_Repair
     }
 
-    return 0x00436B7C; // return false
+    R->EAX(0);
+    return 0x00436B7E; // return false
 }
 
 
