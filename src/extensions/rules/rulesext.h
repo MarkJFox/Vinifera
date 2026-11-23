@@ -401,6 +401,20 @@ public:
     int AdvancedAIHarvestersPerRefinery;
 
     /**
+     *  AF-0011: Mobile war factories (vehicles that deploy into a building with
+     *  IsMobileWar=yes). The Advanced AI builds one, drives it towards the
+     *  enemy and deploys it there as a forward factory.
+     */
+    bool IsAdvancedAIMobileWarFactory;
+    int AdvancedAIMobileWarFactoryDelay;            // Frames before the first one.
+    int AdvancedAIMobileWarFactoryRebuildDelay;     // Frames after a loss.
+    int AdvancedAIMobileWarFactoryReserve;          // Credits left over after paying for it.
+    int AdvancedAIMobileWarFactoryFrontRatio;       // Percent of the way from the own to the enemy base.
+    int AdvancedAIMobileWarFactorySafeDistance;     // Cells to enemy buildings.
+    int AdvancedAIMobileWarFactoryRelocateDistance; // Cells off the wanted site before it moves (0 = never).
+    int AdvancedAIMobileWarFactoryRelocateDelay;    // Frames deployed before it may move.
+
+    /**
      *  Aftermath: Extra path cost per harmful vein cell for computer units
      *  without ImmuneToVeins. 0 disables the vein avoidance.
      */

@@ -95,7 +95,13 @@ HouseClassExtension::HouseClassExtension(const HouseClass *this_ptr) :
     AdvAILastBuiltInfantryCount(0),
     FactionSpecificTacticalValues{},
     IsNavalOnly(AdvancedAINavalOnlyState::NOT_CHECKED),
-    LastNavalOnlyCheckFrame(INT_MIN / 2)
+    LastNavalOnlyCheckFrame(INT_MIN / 2),
+    MobileWarNextFrame(0),
+    MobileWarLostFrame(INT_MIN / 2),
+    IsMobileWarOwned(false),
+    MobileWarSite(CELL_NONE),
+    MobileWarAttempts(0),
+    MobileWarDeployedFrame(INT_MIN / 2)
 {
     for (int i = 0; i < Tiberiums.Count(); i++)
     {
@@ -257,6 +263,9 @@ void HouseClassExtension::Object_CRC(CRCEngine& crc) const
     crc(AdvAINavalTactic.Tactic);
     crc(AdvAILastTacticExecutionFrame);
     crc(IsUnderStartRushThreat);
+    crc(IsMobileWarOwned);
+    crc(MobileWarSite.X);
+    crc(MobileWarSite.Y);
 }
 
 

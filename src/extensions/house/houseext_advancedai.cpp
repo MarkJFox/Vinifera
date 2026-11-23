@@ -1896,6 +1896,8 @@ const BuildingTypeClass* HouseClassExtension::Select_Advanced_AI_Building(Advanc
     };
     const auto has_role = [house](const TypeList<BuildingTypeClass*>& list, InfrastructureRole role) {
         for (const BuildingClass* building : Buildings) {
+            // AF-0011: A deployed mobile war factory does not replace the fixed one.
+            if (role == InfrastructureRole::Weapons && building && building->Class->IsMobileWar) continue;
             if (Usable_Owned_Building(building, house) && Matches_Role(building->Class, role) &&
                 (role == InfrastructureRole::Refinery || list.Is_Present(building->Class))) return true;
         }
@@ -2108,11 +2110,13 @@ const char* HouseClassExtension::Advanced_AI_Unit_Start_Limit(const TechnoTypeCl
     // Anti-aircraft units built against an air attack on the base are not team orders.
     if (Advanced_AI_Can_Hit_Air(type) && Advanced_AI_Air_Attackers() > 0) return nullptr;
 
-    // Harvesters, base rebuilders and engineers for capturing are not team orders.
+    // Harvesters, base rebuilders, mobile war factories (AF-0011) and engineers
+    // for capturing are not team orders.
     if (type->RTTI == RTTI_UNITTYPE) {
         const auto* unittype = static_cast<const UnitTypeClass*>(type);
         if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype) ||
-            (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard)) return nullptr;
+            (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard) ||
+            Is_Mobile_War_Factory_Type(unittype)) return nullptr;
     }
     if (type->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(type)->IsEngineer) return nullptr;
 
@@ -2141,7 +2145,8 @@ const char* HouseClassExtension::Advanced_AI_Unit_Start_Limit(const TechnoTypeCl
         if (ptype->RTTI == RTTI_UNITTYPE) {
             const auto* unittype = static_cast<const UnitTypeClass*>(ptype);
             if (unittype->IsToHarvest || unittype->IsToVeinHarvest ||
-                (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard)) continue;
+                (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard) ||
+                Is_Mobile_War_Factory_Type(unittype)) continue;
         }
         if (ptype->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(ptype)->IsEngineer) continue;
         if (team_for(ptype) == team) pending += ptype->Cost;

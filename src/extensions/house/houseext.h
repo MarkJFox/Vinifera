@@ -20,6 +20,7 @@
 class FactoryClass;
 class TeamClass;
 class TechnoClass;
+class UnitClass;
 class UnitTypeClass;
 class AircraftTypeClass;
 class BuildingClass;
@@ -338,6 +339,20 @@ private:
     bool AdvAI_Select_Air_Defense_Unit(RTTIType rtti);
     int AdvAI_Harvester_Shortfall(const UnitTypeClass* harvester) const;
 
+    /**
+     *  AF-0011: Mobile war factories (houseext_advai_mobilewar.cpp).
+     */
+    static bool Is_Mobile_War_Factory_Type(const UnitTypeClass* type);
+    const UnitTypeClass* AdvAI_Mobile_War_Factory_To_Build(DynamicVectorClass<BuildingTypeClass*>& owned) const;
+    void AdvAI_Mobile_War_Factory_AI();
+    void AdvAI_Mobile_War_Factory_Vehicle_AI(UnitClass* unit, bool emergency);
+    void AdvAI_Mobile_War_Factory_Building_AI(BuildingClass* building);
+    bool AdvAI_Has_Fixed_Weapons_Factory() const;
+    const HouseClass* AdvAI_Mobile_War_Front_Enemy() const;
+    Cell AdvAI_Mobile_War_Front_Point() const;
+    bool AdvAI_Is_Mobile_War_Site_Safe(const Cell& cell) const;
+    Cell AdvAI_Find_Mobile_War_Site(const UnitTypeClass* type, const Cell& point, const Cell& zone_cell) const;
+
 public:
     bool Has_Prerequisite(int prerequisite);
     bool Has_Prerequisite(PrerequisiteGroupType group);
@@ -447,4 +462,14 @@ public:
     int FactionSpecificTacticalValues[ADVAI_TACTICAL_VALUE_COUNT];
     AdvancedAINavalOnlyState IsNavalOnly;
     int LastNavalOnlyCheckFrame;
+
+    /**
+     *  AF-0011: Mobile war factory state (plain data, saved with the extension).
+     */
+    int MobileWarNextFrame;         // Next logic pass.
+    int MobileWarLostFrame;         // When the last one was lost (rebuild delay).
+    bool IsMobileWarOwned;          // Owned one at the last pass.
+    Cell MobileWarSite;             // Cell the vehicle drives to and deploys at.
+    int MobileWarAttempts;          // Failed trips or deploys at that site.
+    int MobileWarDeployedFrame;     // When it last deployed (relocation delay).
 };

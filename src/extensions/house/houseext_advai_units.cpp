@@ -1131,6 +1131,13 @@ int HouseClassExtension::AdvAI_AI_Unit()
         return TICKS_PER_SECOND;
     }
 
+    // AF-0011: A forward mobile war factory; no team values unarmed vehicles.
+    if (const UnitTypeClass* mobilewar = AdvAI_Mobile_War_Factory_To_Build(owned)) {
+        house->BuildUnit = mobilewar->HeapID;
+        DEV_DEBUG_INFO("AF-0011: house={} frame={} mobile-war ordered {}\n", (int)house->HeapID, Frame, mobilewar->Name());
+        return TICKS_PER_SECOND;
+    }
+
     int id = 0;
     TeamClass* team = Get_Team_In_Production(id, RTTI_UNIT, PRODFLAG_NONE);
 
@@ -2230,6 +2237,8 @@ void HouseClassExtension::AdvAI_Expert_AI()
         NextEngineerCheckFrame = Frame + 500 + Random_Pick(10, 50);
     }
 
+    AdvAI_Mobile_War_Factory_AI();
+
     // Without construction yards and war factories we are unlikely to recover.
     // Send all combat vehicles into hunt mode once.
     if (Frame > 5000 && house->ConstructionYards.Count() == 0 && house->UnitFactories == 0 && !HasPerformedVehicleCharge) {
@@ -2241,6 +2250,7 @@ void HouseClassExtension::AdvAI_Expert_AI()
             if (unit->House == house && !unit->IsInLimbo &&
                 (unit->Class->DeploysInto == nullptr || !unit->Class->DeploysInto->IsConstructionYard) &&
                 !unit->Class->IsToHarvest && !unit->Class->IsToVeinHarvest &&
+                !Is_Mobile_War_Factory_Type(unit->Class) && // AF-0011: deploys instead (emergency).
                 (unit->Team == nullptr || Extension::Fetch(unit->Team)->Is_AdvAI_Managed())) {
 
                 if (unit->Team != nullptr) {

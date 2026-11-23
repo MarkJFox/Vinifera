@@ -142,6 +142,14 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     IsAdvancedAIDefenseSpread(true),
     AdvancedAIRichFunds(8000),
     AdvancedAIHarvestersPerRefinery(2),
+    IsAdvancedAIMobileWarFactory(true),
+    AdvancedAIMobileWarFactoryDelay(TICKS_PER_MINUTE * 6),
+    AdvancedAIMobileWarFactoryRebuildDelay(TICKS_PER_MINUTE * 3),
+    AdvancedAIMobileWarFactoryReserve(1000),
+    AdvancedAIMobileWarFactoryFrontRatio(40),
+    AdvancedAIMobileWarFactorySafeDistance(12),
+    AdvancedAIMobileWarFactoryRelocateDistance(20),
+    AdvancedAIMobileWarFactoryRelocateDelay(TICKS_PER_MINUTE * 5),
     AIVeinPathCost(10.0)
 {
     /**
@@ -326,6 +334,14 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(IsAdvancedAIDefenseSpread);
     crc(AdvancedAIRichFunds);
     crc(AdvancedAIHarvestersPerRefinery);
+    crc(IsAdvancedAIMobileWarFactory);
+    crc(AdvancedAIMobileWarFactoryDelay);
+    crc(AdvancedAIMobileWarFactoryRebuildDelay);
+    crc(AdvancedAIMobileWarFactoryReserve);
+    crc(AdvancedAIMobileWarFactoryFrontRatio);
+    crc(AdvancedAIMobileWarFactorySafeDistance);
+    crc(AdvancedAIMobileWarFactoryRelocateDistance);
+    crc(AdvancedAIMobileWarFactoryRelocateDelay);
     crc(AIVeinPathCost);
     crc(AdvancedAITacticTypes.Count());
 }
@@ -522,6 +538,14 @@ void RulesClassExtension::Initialize(CCINIClass &ini)
     IsAdvancedAIDefenseSpread = true;
     AdvancedAIRichFunds = 8000;
     AdvancedAIHarvestersPerRefinery = 2;
+    IsAdvancedAIMobileWarFactory = true;
+    AdvancedAIMobileWarFactoryDelay = TICKS_PER_MINUTE * 6;
+    AdvancedAIMobileWarFactoryRebuildDelay = TICKS_PER_MINUTE * 3;
+    AdvancedAIMobileWarFactoryReserve = 1000;
+    AdvancedAIMobileWarFactoryFrontRatio = 40;
+    AdvancedAIMobileWarFactorySafeDistance = 12;
+    AdvancedAIMobileWarFactoryRelocateDistance = 20;
+    AdvancedAIMobileWarFactoryRelocateDelay = TICKS_PER_MINUTE * 5;
     AIVeinPathCost = 10.0;
 
     Verses::Clear();
@@ -955,6 +979,14 @@ bool RulesClassExtension::AI(CCINIClass& ini)
     IsAdvancedAIDefenseSpread = ini.Get_Bool(AI, "AdvancedAIDefenseSpread", IsAdvancedAIDefenseSpread);
     AdvancedAIRichFunds = std::max(0, ini.Get_Int(AI, "AdvancedAIRichFunds", AdvancedAIRichFunds));
     AdvancedAIHarvestersPerRefinery = std::clamp(ini.Get_Int(AI, "AdvancedAIHarvestersPerRefinery", AdvancedAIHarvestersPerRefinery), 1, 5);
+    IsAdvancedAIMobileWarFactory = ini.Get_Bool(AI, "AdvancedAIMobileWarFactory", IsAdvancedAIMobileWarFactory);
+    AdvancedAIMobileWarFactoryDelay = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryDelay", AdvancedAIMobileWarFactoryDelay));
+    AdvancedAIMobileWarFactoryRebuildDelay = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryRebuildDelay", AdvancedAIMobileWarFactoryRebuildDelay));
+    AdvancedAIMobileWarFactoryReserve = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryReserve", AdvancedAIMobileWarFactoryReserve));
+    AdvancedAIMobileWarFactoryFrontRatio = std::clamp(ini.Get_Int(AI, "AdvancedAIMobileWarFactoryFrontRatio", AdvancedAIMobileWarFactoryFrontRatio), 10, 80);
+    AdvancedAIMobileWarFactorySafeDistance = std::clamp(ini.Get_Int(AI, "AdvancedAIMobileWarFactorySafeDistance", AdvancedAIMobileWarFactorySafeDistance), 0, 40);
+    AdvancedAIMobileWarFactoryRelocateDistance = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryRelocateDistance", AdvancedAIMobileWarFactoryRelocateDistance));
+    AdvancedAIMobileWarFactoryRelocateDelay = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryRelocateDelay", AdvancedAIMobileWarFactoryRelocateDelay));
     AIVeinPathCost = std::max(0.0, ini.Get_Float(AI, "AIVeinPathCost", AIVeinPathCost));
 
     TypeList<int> delays(DIFF_COUNT);
