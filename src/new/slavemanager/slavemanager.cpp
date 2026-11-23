@@ -63,6 +63,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 
 
 /**
@@ -84,6 +85,12 @@ static constexpr int MAX_DEPLOY_ATTEMPTS = 3;
  *  Minimum frames between two relocation scans of a deployed miner.
  */
 static constexpr int RELOCATION_SCAN_DELAY = 90;
+
+/**
+ *  Frames after deploying before the miner checks for a move, so its slaves
+ *  work at least one round first.
+ */
+static constexpr int RELOCATION_SETTLE_DELAY = 600;
 
 /**
  *  How far (in cells) around the Tiberium the miner looks for a deploy site at
@@ -114,12 +121,24 @@ static constexpr int SLAVE_STUCK_DELAY = 75;
 static constexpr int SLAVE_DOOR_DELAY = 30;
 
 /**
+ *  Frames a walking slave may go without getting closer to its Tiberium
+ *  target before it gives up (blocked by other infantry).
+ */
+static constexpr int SLAVE_MOVE_STUCK_DELAY = 150;
+
+/**
  *  After this many stuck delays in a row, a returning slave within
  *  SLAVE_STUCK_ENTER_GAP cells of the deployed miner enters it from where it
  *  stands.
  */
 static constexpr int SLAVE_STUCK_ENTER_COUNT = 3;
 static constexpr int SLAVE_STUCK_ENTER_GAP = 3;
+
+/**
+ *  Walks to the door that end without a path before a slave enters from
+ *  where it is (within its search radius).
+ */
+static constexpr int SLAVE_PATH_FAIL_COUNT = 3;
 
 /**
  *  Frames between two wide searches for Tiberium once the remembered field
@@ -266,8 +285,10 @@ static int Cell_Distance(const Cell &a, const Cell &b)
  *  Finds the nearest Tiberium cell around a center cell. Within the nearest
  *  ring that has Tiberium, the most valuable cell wins. Shroud is ignored on
  *  purpose (it differs between players and would desync multiplayer games).
+ *  With a zone (>= 0) only cells in that movement zone count, and cells next
+ *  to "avoid" are skipped.
  */
-static Cell Find_Tiberium(const Cell &center, int radius_leptons)
+static Cell Find_Tiberium(const Cell &center, int radius_leptons, int zone = -1, MZoneType mzone = MZONE_NORMAL, Cell avoid = CELL_NONE)
 {
     const int radius = radius_leptons / CELL_LEPTON_W;
 
@@ -296,6 +317,14 @@ static Cell Find_Tiberium(const Cell &center, int radius_leptons)
                     continue;
                 }
 
+                if (avoid != CELL_NONE && std::abs(cell.X - avoid.X) <= 1 && std::abs(cell.Y - avoid.Y) <= 1) {
+                    continue;
+                }
+
+                if (zone >= 0 && Map.Get_Cell_Zone(cell, mzone, false) != zone) {
+                    continue;
+                }
+
                 const int value = cellptr.Get_Tiberium_Value();
                 if (value > best_value) {
                     best_value = value;
@@ -314,6 +343,58 @@ static Cell Find_Tiberium(const Cell &center, int radius_leptons)
 
 
 /**
+ *  Test log only: why sites closer to the Tiberium than the chosen one were
+ *  rejected. Filled by Find_Deploy_Site, no influence on the result.
+ */
+struct DeploySiteStats
+{
+    int Zone = 0;       // Vehicle cannot drive there.
+    int Tiberium = 0;   // Footprint on Tiberium.
+    int Slope = 0;      // Footprint on a slope.
+    int Uneven = 0;     // Footprint cells of different height.
+    int Occupied = 0;   // Units, infantry, buildings or terrain on the footprint.
+    int Placement = 0;  // Legal_Placement failed for another reason.
+    int DoorBuilding = 0;
+    int DoorBlocked = 0;
+    int DoorZone = 0;
+    int OtherDoor = 0;
+};
+
+
+/**
+ *  Best guess why Legal_Placement rejected the footprint at "topleft".
+ */
+static void Count_Placement_Reason(const BuildingTypeClass *buildingtype, const Cell &topleft, DeploySiteStats &stats)
+{
+    const int width = buildingtype->Width();
+    const int height = buildingtype->Height();
+    bool tiberium = false, slope = false, uneven = false, occupied = false;
+    int first_height = -1;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const Cell cell(topleft.X + x, topleft.Y + y);
+            if (!Map.In_Local_Radar(cell)) {
+                continue;
+            }
+            CellClass &cellptr = Map[cell];
+            if (cellptr.Land_Type() == LAND_TIBERIUM) tiberium = true;
+            if (cellptr.Ramp != 0) slope = true;
+            if (first_height < 0) first_height = cellptr.Height;
+            else if (cellptr.Height != first_height) uneven = true;
+            if (cellptr.Cell_Occupier() != nullptr) occupied = true;
+        }
+    }
+
+    if (tiberium) ++stats.Tiberium;
+    else if (slope) ++stats.Slope;
+    else if (uneven) ++stats.Uneven;
+    else if (occupied) ++stats.Occupied;
+    else ++stats.Placement;
+}
+
+
+/**
  *  Finds the cell a vehicle has to stand on to deploy into "buildingtype"
  *  as close as possible to the given Tiberium cell. The vehicle must be able
  *  to reach the cell (same movement zone as "zone_cell").
@@ -323,8 +404,11 @@ static Cell Find_Tiberium(const Cell &center, int radius_leptons)
  *  always returns the nearest legal site, never just the first one found.
  *  Equally near sites are decided by the distance to "zone_cell" (shorter trip).
  */
-static Cell Find_Deploy_Site(BuildingTypeClass *buildingtype, const Cell &ore, const Cell &zone_cell, MZoneType mzone)
+static Cell Find_Deploy_Site(const SlaveManagerClass *manager, BuildingTypeClass *buildingtype, const Cell &ore, const Cell &zone_cell, MZoneType mzone, DeploySiteStats *stats = nullptr)
 {
+    DeploySiteStats dummy;
+    DeploySiteStats &st = stats != nullptr ? *stats : dummy;
+
     if (buildingtype == nullptr || ore == CELL_NONE) {
         return CELL_NONE;
     }
@@ -365,6 +449,7 @@ static Cell Find_Deploy_Site(BuildingTypeClass *buildingtype, const Cell &ore, c
                 }
 
                 if (Map.Get_Cell_Zone(stand, mzone, false) != zone) {
+                    ++st.Zone;
                     continue;
                 }
 
@@ -375,6 +460,19 @@ static Cell Find_Deploy_Site(BuildingTypeClass *buildingtype, const Cell &ore, c
                  */
                 Cell topleft = mobile ? stand : Adjacent_Cell(stand, FACING_NW);
                 if (!buildingtype->Legal_Placement(topleft, nullptr)) {
+                    if (stats != nullptr) {
+                        Count_Placement_Reason(buildingtype, topleft, st);
+                    }
+                    continue;
+                }
+
+                const char *door_reason = nullptr;
+                if (manager != nullptr && !manager->Is_Door_Site_Clear(buildingtype, topleft, ore, &door_reason)) {
+                    if (door_reason == nullptr) {}
+                    else if (std::strcmp(door_reason, "door building") == 0) ++st.DoorBuilding;
+                    else if (std::strcmp(door_reason, "door blocked") == 0) ++st.DoorBlocked;
+                    else if (std::strcmp(door_reason, "door zone") == 0) ++st.DoorZone;
+                    else ++st.OtherDoor;
                     continue;
                 }
 
@@ -773,6 +871,8 @@ void SlaveManagerClass::Set_Owner(TechnoClass *owner)
         SlaveNode *node = Slaves[index];
         node->BestDistance = INT_MAX;
         node->StuckCount = 0;
+        node->BadOre = CELL_NONE;
+        node->PathFails = 0;
         if (node->Status == SlaveStatus::Returning) {
             node->Timer = SLAVE_STUCK_DELAY;
         }
@@ -789,7 +889,7 @@ void SlaveManagerClass::Set_Owner(TechnoClass *owner)
          */
         IsRelocating = false;
         OrderedOre = CELL_NONE;
-        LastRelocationScanFrame = Frame;
+        LastRelocationScanFrame = Frame + RELOCATION_SETTLE_DELAY - RELOCATION_SCAN_DELAY;
         IsAbsorbPending = true;
         Set_Status(SlaveManagerStatus::Working);
 
@@ -1134,7 +1234,7 @@ void SlaveManagerClass::AI_Scanning()
 
     unit->Mark(MARK_UP);
     unit->Locomotion->Mark_All_Occupation_Bits(MARK_UP);
-    const Cell site = Find_Deploy_Site(unit->Class->DeploysInto, ore, here, unit->Class->MZone);
+    const Cell site = Find_Deploy_Site(this, unit->Class->DeploysInto, ore, here, unit->Class->MZone);
     unit->Locomotion->Mark_All_Occupation_Bits(MARK_DOWN);
     unit->Mark(MARK_DOWN);
 
@@ -1194,7 +1294,25 @@ void SlaveManagerClass::AI_Travelling()
 
     if (unit->NavCom != nullptr) {
         if (unit->NavCom != &Map[DeploySite]) {
-            Stop();
+
+            /**
+             *  The game moves the destination to a free cell nearby when the
+             *  site got blocked (another miner deployed there). That is no
+             *  order of the player: look for a new site instead of giving up.
+             */
+            const Cell navcell(unit->NavCom->Center_Coord());
+            if (std::abs(navcell.X - DeploySite.X) <= 2 && std::abs(navcell.Y - DeploySite.Y) <= 2) {
+                Slave_Log("M%-4d |       | travel | site %d,%d blocked, destination moved to %d,%d, scanning again",
+                    Manager_Index(), DeploySite.X, DeploySite.Y, navcell.X, navcell.Y);
+                unit->Assign_Destination(nullptr);
+                if (++DeployAttempts >= MAX_DEPLOY_ATTEMPTS) {
+                    Stop();
+                } else {
+                    Set_Status(SlaveManagerStatus::Scanning);
+                }
+            } else {
+                Stop();
+            }
         }
         return;
     }
@@ -1354,16 +1472,47 @@ void SlaveManagerClass::Check_Relocation(BuildingClass *building)
     LastRelocationScanFrame = Frame;
 
     const Cell center(building->Center_Coord());
-    if (Find_Tiberium(center, Short_Scan()) != CELL_NONE) {
+    const bool has_slaves = Slave_Type() != nullptr;
+
+    /**
+     *  The miner's own test: Tiberium in the short scan around its center keeps
+     *  it here. With slaves only Tiberium they can walk to from the door counts.
+     */
+    const Cell outside = has_slaves ? Door_Outside() : CELL_NONE;
+    const bool walled_in = has_slaves && outside == CELL_NONE;
+    const int zone = (has_slaves && !walled_in) ? Slave_Zone(outside) : -1;
+    const MZoneType mzone = has_slaves ? Slave_Type()->MZone : MZONE_NORMAL;
+
+    if (!walled_in && Find_Tiberium(center, Short_Scan(), zone, mzone) != CELL_NONE) {
         return;
     }
 
-    const Cell ore = Find_Tiberium(center, Long_Scan());
+    Cell ore = CELL_NONE;
+    if (zone >= 0) {
+        ore = Find_Tiberium(center, Long_Scan(), zone, mzone);
+    }
+
+    if (ore == CELL_NONE) {
+        ore = Find_Tiberium(center, Long_Scan());
+    }
+
     if (ore == CELL_NONE) {
         return;
     }
 
-    Relocate(building, ore, true);
+
+    /**
+     *  Only a walled-in door moves the miner to a site that is not closer.
+     */
+    const bool check_correction = !walled_in;
+
+    if (Slave_Log_Enabled()) {
+        char details[96];
+        std::snprintf(details, sizeof(details), "%s, ore %d,%d", walled_in ? "door walled in" : "no reachable Tiberium in the short scan", ore.X, ore.Y);
+        Slave_Log("M%-4d |       | relocate check | %s", Manager_Index(), details);
+    }
+
+    Relocate(building, ore, check_correction);
 }
 
 
@@ -1385,14 +1534,31 @@ bool SlaveManagerClass::Relocate(BuildingClass *building, const Cell &ore, bool 
      *  The vehicle appears south-east of the building's origin when undeploying.
      */
     const Cell exit_cell = Adjacent_Cell(building->Get_Cell(), FACING_SE);
-    const Cell site = Find_Deploy_Site(unittype->DeploysInto, ore, exit_cell, unittype->MZone);
+    DeploySiteStats stats;
+    const Cell site = Find_Deploy_Site(this, unittype->DeploysInto, ore, exit_cell, unittype->MZone, &stats);
+
+    /**
+     *  Test log: what kept the sites closer to the ore free.
+     */
+    if (Slave_Log_Enabled()) {
+        Slave_Log("M%-4d |       | relocate | closer sites rejected: zone %d, tiberium %d, slope %d, uneven %d, occupied %d, placement %d, door building %d, door blocked %d, door zone %d, other door %d",
+            Manager_Index(), stats.Zone, stats.Tiberium, stats.Slope, stats.Uneven, stats.Occupied, stats.Placement,
+            stats.DoorBuilding, stats.DoorBlocked, stats.DoorZone, stats.OtherDoor);
+    }
+
     if (site == CELL_NONE) {
+        Slave_Log("M%-4d |       | relocate | no deploy site near ore %d,%d, staying", Manager_Index(), ore.X, ore.Y);
         return false;
     }
 
     if (check_correction && Cell_Distance(site, ore) + Scan_Correction() >= Cell_Distance(center, ore)) {
+        Slave_Log("M%-4d |       | relocate | site %d,%d not closer to ore %d,%d (%d cells, now %d, correction %d), staying",
+            Manager_Index(), site.X, site.Y, ore.X, ore.Y,
+            Cell_Distance(site, ore) / CELL_LEPTON_W, Cell_Distance(center, ore) / CELL_LEPTON_W, Scan_Correction() / CELL_LEPTON_W);
         return false;
     }
+
+    Slave_Log("M%-4d |       | relocate | moving to %d,%d for ore %d,%d", Manager_Index(), site.X, site.Y, ore.X, ore.Y);
 
     LastOre = ore;
     DeploySite = site;
@@ -1536,8 +1702,14 @@ const char *SlaveManagerClass::Release_Blocker()
     if (mission == MISSION_CONSTRUCTION) return "building constructing";
     if (mission == MISSION_DECONSTRUCTION) return "building packing up";
 
-    if (Find_Tiberium(Door_Cell(), Slave_Reach()) == CELL_NONE && Remembered_Ore() == CELL_NONE) {
-        return "no Tiberium in reach and none remembered";
+    const Cell outside = Door_Outside();
+    if (outside == CELL_NONE) return "door walled in";
+
+    const int zone = Slave_Zone(outside);
+    const MZoneType mzone = Slave_Type() != nullptr ? Slave_Type()->MZone : MZONE_NORMAL;
+    if (Find_Tiberium(Door_Cell(), Slave_Reach(), zone, mzone) == CELL_NONE
+        && (Can_Relocate() || Remembered_Ore(zone) == CELL_NONE)) {
+        return Can_Relocate() ? "no Tiberium in reach, miner will move" : "no Tiberium in reach and none remembered";
     }
     return nullptr;
 }
@@ -1642,15 +1814,19 @@ int SlaveManagerClass::Slave_Reach() const
  *  by Tiberium near it, or by a wide search around the miner (LongScan, at
  *  most every LAST_ORE_SCAN_DELAY frames).
  */
-Cell SlaveManagerClass::Remembered_Ore()
+Cell SlaveManagerClass::Remembered_Ore(int zone)
 {
-    if (LastOre != CELL_NONE && Map[LastOre].Land_Type() == LAND_TIBERIUM) {
+    const MZoneType mzone = Slave_Type() != nullptr ? Slave_Type()->MZone : MZONE_NORMAL;
+
+    if (LastOre != CELL_NONE && Map[LastOre].Land_Type() == LAND_TIBERIUM
+        && (zone < 0 || Map.Get_Cell_Zone(LastOre, mzone, false) == zone)) {
         return LastOre;
     }
 
     if (LastOre != CELL_NONE) {
-        LastOre = Find_Tiberium(LastOre, Slave_Scan());
-        if (LastOre != CELL_NONE) {
+        const Cell ore = Find_Tiberium(LastOre, Slave_Scan(), zone, mzone);
+        if (ore != CELL_NONE) {
+            LastOre = ore;
             return LastOre;
         }
     }
@@ -1660,8 +1836,117 @@ Cell SlaveManagerClass::Remembered_Ore()
     }
 
     LastOreScanFrame = Frame;
-    LastOre = Find_Tiberium(Owner->Get_Cell(), Long_Scan());
-    return LastOre;
+    const Cell ore = Find_Tiberium(Owner->Get_Cell(), Long_Scan(), zone, mzone);
+    if (ore != CELL_NONE) {
+        LastOre = ore;
+    }
+    return ore;
+}
+
+
+/**
+ *  Movement zone of a cell for the slave type, or -1 if there is no slave type.
+ */
+int SlaveManagerClass::Slave_Zone(const Cell &cell) const
+{
+    const InfantryTypeClass *type = Slave_Type();
+    if (type == nullptr || cell == CELL_NONE) {
+        return -1;
+    }
+    return Map.Get_Cell_Zone(cell, type->MZone, false);
+}
+
+
+/**
+ *  The first cell outside the deployed miner in front of its door; slaves
+ *  coming out stand in its movement zone.
+ */
+Cell SlaveManagerClass::Door_Outside() const
+{
+    const Cell door = Door_Cell();
+    static const int _offsets[][2] = { {1,0}, {1,1}, {1,-1} };
+
+    for (int i = 0; i < int(sizeof(_offsets) / sizeof(_offsets[0])); ++i) {
+        const Cell cell(door.X + _offsets[i][0], door.Y + _offsets[i][1]);
+        if (Map.In_Local_Radar(cell) && Map[cell].Cell_Building() == nullptr) {
+            return cell;
+        }
+    }
+    return CELL_NONE;
+}
+
+
+/**
+ *  Does the miner move on by itself once its field is used up? Like
+ *  AI_Working: with a harvest order, or always for the computer.
+ */
+bool SlaveManagerClass::Can_Relocate() const
+{
+    BuildingClass *building = Owner_Building();
+    if (building == nullptr || building->Class->UndeploysInto == nullptr || building->Class->UndeploysInto->DeploysInto == nullptr) {
+        return false;
+    }
+    return HasHarvestOrder || !building->House->Is_Human_Player();
+}
+
+
+bool SlaveManagerClass::Is_Door_Site_Clear(const BuildingTypeClass *buildingtype, const Cell &topleft, const Cell &ore, const char **reason) const
+{
+    const char *dummy = nullptr;
+    if (reason == nullptr) {
+        reason = &dummy;
+    }
+
+    const int width = buildingtype->Width();
+    const int height = buildingtype->Height();
+    const Cell door(topleft.X + width - 1, topleft.Y + height / 2);
+
+    /**
+     *  The three cells in front of the door: no building, the middle one walkable.
+     */
+    for (int dy = -1; dy <= 1; ++dy) {
+        const Cell cell(door.X + 1, door.Y + dy);
+        if (!Map.In_Local_Radar(cell) || Map[cell].Cell_Building() != nullptr) {
+            *reason = "door building";
+            return false;
+        }
+    }
+
+    const Cell front(door.X + 1, door.Y);
+    CellClass &frontcell = Map[front];
+    if (!frontcell.Is_Clear_To_Move(SPEED_FOOT, true, true, -1, MZONE_NORMAL, frontcell.Height, true)) {
+        *reason = "door blocked";
+        return false;
+    }
+
+    const InfantryTypeClass *type = Slave_Type();
+    if (type != nullptr && ore != CELL_NONE
+        && Map.Get_Cell_Zone(front, type->MZone, false) != Map.Get_Cell_Zone(ore, type->MZone, false)) {
+        *reason = "door zone";
+        return false;
+    }
+
+    /**
+     *  Do not build over the door, or the cells in front of it, of another Slave Miner.
+     */
+    const Cell bottomright(topleft.X + width - 1, topleft.Y + height - 1);
+    for (int index = 0; index < SlaveManagers.Count(); ++index) {
+        const SlaveManagerClass *other = SlaveManagers[index];
+        if (other == this || other->Owner_Building() == nullptr) {
+            continue;
+        }
+        const Cell other_door = other->Door_Cell();
+        for (int dx = 0; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                if (Area_Gap(topleft, bottomright, Cell(other_door.X + dx, other_door.Y + dy)) == 0) {
+                    *reason = "other door";
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
 }
 
 
@@ -1834,6 +2119,8 @@ void SlaveManagerClass::Create_Slaves()
         node->Target = CELL_NONE;
         node->BestDistance = INT_MAX;
         node->StuckCount = 0;
+        node->BadOre = CELL_NONE;
+        node->PathFails = 0;
 
         Slaves.Add(node);
     }
@@ -2006,12 +2293,39 @@ void SlaveManagerClass::Slave_AI(SlaveNode &node)
                 break;
             }
             if (busy) {
+
+                /**
+                 *  Still walking, but no closer for a while: blocked by other
+                 *  infantry (the locomotor waits forever). Skip this target.
+                 */
+                if (node.Timer.Expired() && node.Target != CELL_NONE) {
+                    const int distance = Cell_Distance(slave->Get_Cell(), node.Target);
+                    if (distance < node.BestDistance) {
+                        node.BestDistance = distance;
+                        node.Timer = SLAVE_MOVE_STUCK_DELAY;
+                    } else {
+                        node.BadOre = node.Target;
+                        Log_Slave(node, "stuck", "no progress towards the Tiberium target, skipped");
+                        slave->Assign_Destination(nullptr);
+                        slave->Assign_Mission(MISSION_GUARD);
+                        Slave_Seek(node);
+                    }
+                }
                 break;
             }
             if (Map[slave->Get_Cell()].Land_Type() == LAND_TIBERIUM) {
                 node.Status = SlaveStatus::Harvesting;
                 node.Timer = Slave_Harvest_Rate(slave);
+                node.BadOre = CELL_NONE;
             } else {
+
+                /**
+                 *  Stopped short of the target: no path there. Skip it from now on.
+                 */
+                if (node.Target != CELL_NONE && Cell_Distance(slave->Get_Cell(), node.Target) > CELL_LEPTON_W) {
+                    node.BadOre = node.Target;
+                    Log_Slave(node, "unreachable", "Tiberium target could not be reached, skipped");
+                }
                 Slave_Seek(node);
             }
             break;
@@ -2094,7 +2408,9 @@ void SlaveManagerClass::Slave_Seek(SlaveNode &node)
     }
 
     const Cell here = slave->Get_Cell();
-    Cell ore = Find_Tiberium(here, Slave_Scan());
+    const int zone = Slave_Zone(here);
+    const MZoneType mzone = slave->Class->MZone;
+    Cell ore = Find_Tiberium(here, Slave_Scan(), zone, mzone, node.BadOre);
     const char *source = "near slave";
 
     /**
@@ -2102,15 +2418,16 @@ void SlaveManagerClass::Slave_Seek(SlaveNode &node)
      *  reaches; then search from the door as far as the miner works.
      */
     if (ore == CELL_NONE && Owner_Building() != nullptr) {
-        ore = Find_Tiberium(Door_Cell(), Slave_Reach());
+        ore = Find_Tiberium(Door_Cell(), Slave_Reach(), zone, mzone, node.BadOre);
         source = "near door";
     }
 
     /**
-     *  Nothing within reach: walk to the remembered field and search there.
+     *  Nothing within reach: walk to the remembered field and search there,
+     *  unless the miner moves on by itself (it then comes closer instead).
      */
-    if (ore == CELL_NONE) {
-        ore = Remembered_Ore();
+    if (ore == CELL_NONE && !Can_Relocate()) {
+        ore = Remembered_Ore(zone);
         source = "remembered field";
     }
 
@@ -2140,6 +2457,8 @@ void SlaveManagerClass::Slave_Seek(SlaveNode &node)
 
     Slave_Move(node, ore);
     node.Status = SlaveStatus::Moving;
+    node.BestDistance = Cell_Distance(here, ore);
+    node.Timer = SLAVE_MOVE_STUCK_DELAY;
 }
 
 
@@ -2153,6 +2472,7 @@ void SlaveManagerClass::Slave_Return(SlaveNode &node)
         node.Status = SlaveStatus::Returning;
         node.BestDistance = INT_MAX;
         node.StuckCount = 0;
+        node.PathFails = 0;
         node.Timer = SLAVE_STUCK_DELAY;
     }
 
@@ -2186,6 +2506,7 @@ void SlaveManagerClass::Slave_Return_To_Building(SlaveNode &node)
     if (distance < node.BestDistance) {
         node.BestDistance = distance;
         node.StuckCount = 0;
+        node.PathFails = 0;
         node.Timer = SLAVE_STUCK_DELAY;
     }
 
@@ -2243,6 +2564,31 @@ void SlaveManagerClass::Slave_Return_To_Building(SlaveNode &node)
         node.Timer = SLAVE_STUCK_DELAY;
         Slave_Move(node, door);
         return;
+    }
+
+    /**
+     *  The last walk to the door ended without getting there: no path (door
+     *  walled in, e.g. by another building). After a few tries the slave
+     *  enters from where it is, if it is within its search radius.
+     */
+    if (!busy && node.Target == door) {
+        ++node.PathFails;
+
+        BuildingClass *building = Owner_Building();
+        const Cell topleft = building->Get_Cell();
+        const Cell bottomright(topleft.X + building->Class->Width() - 1, topleft.Y + building->Class->Height() - 1);
+        const int gap = Area_Gap(topleft, bottomright, here);
+
+        if (Slave_Log_Enabled()) {
+            char details[80];
+            std::snprintf(details, sizeof(details), "no path to the door (%d), gap to building %d", node.PathFails, gap);
+            Log_Slave(node, "unreachable", details);
+        }
+
+        if (node.PathFails >= SLAVE_PATH_FAIL_COUNT && gap * CELL_LEPTON_W <= Slave_Scan()) {
+            Slave_Enter(node, "door unreachable");
+            return;
+        }
     }
 
     if (!busy || node.Target != door) {

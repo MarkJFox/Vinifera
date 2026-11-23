@@ -42,6 +42,7 @@ class TechnoTypeClass;
 class TechnoTypeClassExtension;
 class UnitClass;
 class BuildingClass;
+class BuildingTypeClass;
 class InfantryClass;
 class InfantryTypeClass;
 class CellClass;
@@ -102,8 +103,10 @@ public:
         SlaveStatus Status;
         CDTimerClass<FrameTimerClass> Timer;
         Cell Target;
-        int BestDistance;   // Closest the slave got to the door while returning (leptons).
+        int BestDistance;   // Closest the slave got to the door while returning, or to its Tiberium target while moving (leptons).
         int StuckCount;     // Times in a row the returning slave made no progress.
+        Cell BadOre;        // Tiberium cell the slave could not walk to; skipped (with its neighbours) when seeking.
+        int PathFails;      // Times in a row no path to the door was found.
     };
 
 public:
@@ -138,6 +141,13 @@ public:
     static bool Can_Slave_Enter_Cell(const InfantryClass *infantry, const CellClass *cell);
     static void Player_Order(TechnoClass *techno);
     static bool Is_Repairable(const BuildingClass *building);
+
+    /**
+     *  Can the miner's building stand at "topleft" without walling in its own
+     *  door or another Slave Miner's door, with "ore" reachable on foot from
+     *  in front of the door?
+     */
+    bool Is_Door_Site_Clear(const BuildingTypeClass *buildingtype, const Cell &topleft, const Cell &ore, const char **reason = nullptr) const;
 
     int Slave_Count() const;
 
@@ -176,7 +186,10 @@ private:
     bool Is_Next_To_Miner(const Cell &cell) const;
     void Planned_Footprint(Cell &topleft, Cell &bottomright) const;
     int Slave_Reach() const;
-    Cell Remembered_Ore();
+    Cell Remembered_Ore(int zone);
+    int Slave_Zone(const Cell &cell) const;
+    Cell Door_Outside() const;
+    bool Can_Relocate() const;
     const char *Release_Blocker();
     int Manager_Index() const;
     void Log_Slave(const SlaveNode &node, const char *event, const char *details = nullptr) const;
