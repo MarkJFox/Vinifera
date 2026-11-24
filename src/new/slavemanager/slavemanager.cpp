@@ -713,7 +713,12 @@ void SlaveManagerClass::On_Detach(TechnoClass *target, bool all)
         return;
     }
 
-    if (target == Owner) {
+    /**
+     *  Only a removed owner is dropped. A detach with "all" false (the owner
+     *  went into limbo or can no longer be targeted) keeps it; otherwise the
+     *  miner stays alive without any manager logic.
+     */
+    if (target == Owner && all) {
         Owner = nullptr;
     }
 
