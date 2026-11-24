@@ -1517,7 +1517,14 @@ void SlaveManagerClass::Check_Relocation(BuildingClass *building)
         Slave_Log("M%-4d |       | relocate check | %s", Manager_Index(), details);
     }
 
-    Relocate(building, ore, check_correction);
+    /**
+     *  Staying (no site, or none closer): the next checks would give the same
+     *  answer every few seconds, with a costly site search and three log
+     *  lines each. Wait as long as after deploying before the next one.
+     */
+    if (!Relocate(building, ore, check_correction)) {
+        LastRelocationScanFrame = Frame + RELOCATION_SETTLE_DELAY - RELOCATION_SCAN_DELAY;
+    }
 }
 
 
