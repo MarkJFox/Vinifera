@@ -415,6 +415,21 @@ public:
     int AdvancedAIMobileWarFactoryRelocateDelay;    // Frames deployed before it may move.
 
     /**
+     *  AF-0012: Slave Miners. The Advanced AI builds them for rich Tiberium
+     *  fields far from its refineries and sends each to such a field.
+     */
+    bool IsAdvancedAISlaveMiner;
+    int AdvancedAISlaveMinerDelay;                  // Frames before the first one.
+    int AdvancedAISlaveMinerRebuildDelay;           // Frames after a loss.
+    int AdvancedAISlaveMinerMax;                    // Per house, vehicles and buildings.
+    int AdvancedAISlaveMinerReserve;                // Credits left over after paying for one.
+    int AdvancedAISlaveMinerFieldValue;             // Minimum reachable value of a field.
+    int AdvancedAISlaveMinerRefineryDistance;       // Cells from the nearest own refinery.
+    int AdvancedAISlaveMinerEnemyDistance;          // Cells from the nearest enemy base.
+    int AdvancedAISlaveMinerMaxTravel;              // Cells an existing miner may drive to a new field, 0 = any.
+    int AdvancedAIMobileRefineryHarvesters;         // Harvesters kept at a mobile refinery (-1 = AdvancedAIHarvestersPerRefinery).
+
+    /**
      *  Aftermath: Extra path cost per harmful vein cell for computer units
      *  without ImmuneToVeins. 0 disables the vein avoidance.
      */

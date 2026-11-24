@@ -150,6 +150,16 @@ RulesClassExtension::RulesClassExtension(const RulesClass* this_ptr) :
     AdvancedAIMobileWarFactorySafeDistance(12),
     AdvancedAIMobileWarFactoryRelocateDistance(20),
     AdvancedAIMobileWarFactoryRelocateDelay(TICKS_PER_MINUTE * 5),
+    IsAdvancedAISlaveMiner(true),
+    AdvancedAISlaveMinerDelay(TICKS_PER_MINUTE * 8),
+    AdvancedAISlaveMinerRebuildDelay(TICKS_PER_MINUTE * 3),
+    AdvancedAISlaveMinerMax(2),
+    AdvancedAISlaveMinerReserve(1500),
+    AdvancedAISlaveMinerFieldValue(10000),
+    AdvancedAISlaveMinerRefineryDistance(15),
+    AdvancedAISlaveMinerEnemyDistance(25),
+    AdvancedAISlaveMinerMaxTravel(40),
+    AdvancedAIMobileRefineryHarvesters(-1),
     AIVeinPathCost(10.0)
 {
     /**
@@ -342,6 +352,16 @@ void RulesClassExtension::Object_CRC(CRCEngine &crc) const
     crc(AdvancedAIMobileWarFactorySafeDistance);
     crc(AdvancedAIMobileWarFactoryRelocateDistance);
     crc(AdvancedAIMobileWarFactoryRelocateDelay);
+    crc(IsAdvancedAISlaveMiner);
+    crc(AdvancedAISlaveMinerDelay);
+    crc(AdvancedAISlaveMinerRebuildDelay);
+    crc(AdvancedAISlaveMinerMax);
+    crc(AdvancedAISlaveMinerReserve);
+    crc(AdvancedAISlaveMinerFieldValue);
+    crc(AdvancedAISlaveMinerRefineryDistance);
+    crc(AdvancedAISlaveMinerEnemyDistance);
+    crc(AdvancedAISlaveMinerMaxTravel);
+    crc(AdvancedAIMobileRefineryHarvesters);
     crc(AIVeinPathCost);
     crc(AdvancedAITacticTypes.Count());
 }
@@ -546,6 +566,16 @@ void RulesClassExtension::Initialize(CCINIClass &ini)
     AdvancedAIMobileWarFactorySafeDistance = 12;
     AdvancedAIMobileWarFactoryRelocateDistance = 20;
     AdvancedAIMobileWarFactoryRelocateDelay = TICKS_PER_MINUTE * 5;
+    IsAdvancedAISlaveMiner = true;
+    AdvancedAISlaveMinerDelay = TICKS_PER_MINUTE * 8;
+    AdvancedAISlaveMinerRebuildDelay = TICKS_PER_MINUTE * 3;
+    AdvancedAISlaveMinerMax = 2;
+    AdvancedAISlaveMinerReserve = 1500;
+    AdvancedAISlaveMinerFieldValue = 10000;
+    AdvancedAISlaveMinerRefineryDistance = 15;
+    AdvancedAISlaveMinerEnemyDistance = 25;
+    AdvancedAISlaveMinerMaxTravel = 40;
+    AdvancedAIMobileRefineryHarvesters = -1;
     AIVeinPathCost = 10.0;
 
     Verses::Clear();
@@ -987,6 +1017,16 @@ bool RulesClassExtension::AI(CCINIClass& ini)
     AdvancedAIMobileWarFactorySafeDistance = std::clamp(ini.Get_Int(AI, "AdvancedAIMobileWarFactorySafeDistance", AdvancedAIMobileWarFactorySafeDistance), 0, 40);
     AdvancedAIMobileWarFactoryRelocateDistance = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryRelocateDistance", AdvancedAIMobileWarFactoryRelocateDistance));
     AdvancedAIMobileWarFactoryRelocateDelay = std::max(0, ini.Get_Int(AI, "AdvancedAIMobileWarFactoryRelocateDelay", AdvancedAIMobileWarFactoryRelocateDelay));
+    IsAdvancedAISlaveMiner = ini.Get_Bool(AI, "AdvancedAISlaveMiner", IsAdvancedAISlaveMiner);
+    AdvancedAISlaveMinerDelay = std::max(0, ini.Get_Int(AI, "AdvancedAISlaveMinerDelay", AdvancedAISlaveMinerDelay));
+    AdvancedAISlaveMinerRebuildDelay = std::max(0, ini.Get_Int(AI, "AdvancedAISlaveMinerRebuildDelay", AdvancedAISlaveMinerRebuildDelay));
+    AdvancedAISlaveMinerMax = std::clamp(ini.Get_Int(AI, "AdvancedAISlaveMinerMax", AdvancedAISlaveMinerMax), 0, 10);
+    AdvancedAISlaveMinerReserve = std::max(0, ini.Get_Int(AI, "AdvancedAISlaveMinerReserve", AdvancedAISlaveMinerReserve));
+    AdvancedAISlaveMinerFieldValue = std::max(0, ini.Get_Int(AI, "AdvancedAISlaveMinerFieldValue", AdvancedAISlaveMinerFieldValue));
+    AdvancedAISlaveMinerRefineryDistance = std::clamp(ini.Get_Int(AI, "AdvancedAISlaveMinerRefineryDistance", AdvancedAISlaveMinerRefineryDistance), 0, 100);
+    AdvancedAISlaveMinerEnemyDistance = std::clamp(ini.Get_Int(AI, "AdvancedAISlaveMinerEnemyDistance", AdvancedAISlaveMinerEnemyDistance), 0, 100);
+    AdvancedAISlaveMinerMaxTravel = std::clamp(ini.Get_Int(AI, "AdvancedAISlaveMinerMaxTravel", AdvancedAISlaveMinerMaxTravel), 0, 200);
+    AdvancedAIMobileRefineryHarvesters = std::clamp(ini.Get_Int(AI, "AdvancedAIMobileRefineryHarvesters", AdvancedAIMobileRefineryHarvesters), -1, 10);
     AIVeinPathCost = std::max(0.0, ini.Get_Float(AI, "AIVeinPathCost", AIVeinPathCost));
 
     TypeList<int> delays(DIFF_COUNT);

@@ -134,6 +134,15 @@ public:
     SlaveManagerStatus Get_Status() const { return Status; }
 
     static bool Is_Slave_Miner_Type(const TechnoTypeClass *type);
+
+    /**
+     *  AF-0012: The two kinds of Slave Miner. Slaves exist only when
+     *  SlaveMiner.Slave= is set (on the vehicle or the building). Without
+     *  slaves and with Refinery=yes on the building, the miner is a mobile
+     *  refinery that normal harvesters unload at.
+     */
+    static bool Has_Slave_Type(const TechnoTypeClass *type);
+    static bool Is_Mobile_Refinery_Type(const TechnoTypeClass *type);
     static void Transfer(TechnoClass *from, TechnoClass *to);
     static bool Should_Undeploy(const BuildingClass *building);
     static bool Accepts_Harvest_Order(const TechnoClass *techno);
@@ -141,6 +150,7 @@ public:
     static bool Can_Slave_Enter_Cell(const InfantryClass *infantry, const CellClass *cell);
     static void Player_Order(TechnoClass *techno);
     static bool Is_Repairable(const BuildingClass *building);
+    static Cell Field_Edge(const Cell &ore, const Cell &toward);
 
     /**
      *  Can the miner's building stand at "topleft" without walling in its own
@@ -156,6 +166,8 @@ public:
 
 private:
     void Set_Status(SlaveManagerStatus status);
+    void Reset_Computer_Order(UnitClass *unit);
+    void Retry_Or_Stop();
 
     void AI_Idle();
     void AI_Scanning();

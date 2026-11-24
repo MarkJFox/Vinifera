@@ -353,7 +353,23 @@ private:
     bool AdvAI_Is_Mobile_War_Site_Safe(const Cell& cell) const;
     Cell AdvAI_Find_Mobile_War_Site(const UnitTypeClass* type, const Cell& point, const Cell& zone_cell) const;
 
+    /**
+     *  AF-0012: Slave Miners (houseext_advai_slaveminer.cpp).
+     */
+    static bool Is_AdvAI_Slave_Miner_Unit_Type(const UnitTypeClass* type);
+    const UnitTypeClass* AdvAI_Slave_Miner_To_Build(DynamicVectorClass<BuildingTypeClass*>& owned) const;
+    void AdvAI_Slave_Miner_AI();
+    void AdvAI_Mobile_Refinery_AI();
+    static bool AdvAI_Can_Dock(const UnitTypeClass* harvester, const BuildingTypeClass* refinery);
+    int AdvAI_Slave_Miner_Count(bool production) const;
+    Cell AdvAI_Slave_Miner_Field(const TechnoClass* miner, bool deployed, char* reason, int reason_size) const;
+
 public:
+    /**
+     *  AF-0012: Called by SlaveManagerClass when a computer miner wakes up.
+     */
+    static Cell AdvAI_Slave_Miner_Wake_Up_Field(const UnitClass* unit, bool deployed);
+
     bool Has_Prerequisite(int prerequisite);
     bool Has_Prerequisite(PrerequisiteGroupType group);
     bool Has_Prerequisite(StructType building);
@@ -472,4 +488,11 @@ public:
     Cell MobileWarSite;             // Cell the vehicle drives to and deploys at.
     int MobileWarAttempts;          // Failed trips or deploys at that site.
     int MobileWarDeployedFrame;     // When it last deployed (relocation delay).
+
+    /**
+     *  AF-0012: Slave Miner state (plain data, saved with the extension).
+     */
+    int SlaveMinerNextFrame;        // Next logic pass.
+    int SlaveMinerLostFrame;        // When the last one was lost (rebuild delay).
+    int SlaveMinerOwnedCount;       // Owned at the last pass.
 };

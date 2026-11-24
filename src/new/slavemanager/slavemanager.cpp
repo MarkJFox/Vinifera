@@ -42,6 +42,7 @@
 #include "debughandler.h"
 #include "extension.h"
 #include "house.h"
+#include "houseext.h"
 #include "infantry.h"
 #include "infantrytype.h"
 #include "infantrytypeext.h"
@@ -80,6 +81,11 @@ static constexpr int DEPLOY_RETRY_DELAY = 30;
  *  Give up on a site after this many failed attempts and scan again.
  */
 static constexpr int MAX_DEPLOY_ATTEMPTS = 3;
+
+/**
+ *  AF-0012: Frames a vehicle may take to deploy before the attempt counts as failed.
+ */
+static constexpr int DEPLOY_TIMEOUT = 225;
 
 /**
  *  Minimum frames between two relocation scans of a deployed miner.
@@ -339,6 +345,36 @@ static Cell Find_Tiberium(const Cell &center, int radius_leptons, int zone = -1,
     }
 
     return CELL_NONE;
+}
+
+
+/**
+ *  AF-0012: The last Tiberium cell on the straight line from "ore" towards
+ *  "toward", i.e. the edge of the field on that side. Buildings cannot stand
+ *  on Tiberium, so a deploy site is only found near the edge of a big field.
+ *  Returns "ore" if the line never leaves the field.
+ */
+Cell SlaveManagerClass::Field_Edge(const Cell &ore, const Cell &toward)
+{
+    if (ore == CELL_NONE || toward == CELL_NONE) {
+        return ore;
+    }
+
+    const int dx = toward.X - ore.X;
+    const int dy = toward.Y - ore.Y;
+    const int steps = std::max(std::abs(dx), std::abs(dy));
+
+    Cell edge = ore;
+    for (int i = 1; i <= steps; ++i) {
+        const Cell cell(ore.X + (dx * i + (dx >= 0 ? steps / 2 : -steps / 2)) / steps,
+                        ore.Y + (dy * i + (dy >= 0 ? steps / 2 : -steps / 2)) / steps);
+        if (!Map.In_Local_Radar(cell) || Map[cell].Land_Type() != LAND_TIBERIUM) {
+            break;
+        }
+        edge = cell;
+    }
+
+    return edge;
 }
 
 
@@ -713,7 +749,12 @@ void SlaveManagerClass::On_Detach(TechnoClass *target, bool all)
         return;
     }
 
-    if (target == Owner) {
+    /**
+     *  Only a removed owner is dropped. A detach with "all" false (the owner
+     *  went into limbo or can no longer be targeted) keeps it; otherwise the
+     *  miner stays alive without any manager logic.
+     */
+    if (target == Owner && all) {
         Owner = nullptr;
     }
 
@@ -745,6 +786,46 @@ bool SlaveManagerClass::Is_Slave_Miner_Type(const TechnoTypeClass *type)
     }
 
     return false;
+}
+
+
+/**
+ *  AF-0012: Does this Slave Miner have slaves? Read from the type or its
+ *  vehicle/building counterpart, like Slave_Config().
+ */
+bool SlaveManagerClass::Has_Slave_Type(const TechnoTypeClass *type)
+{
+    if (type == nullptr) {
+        return false;
+    }
+
+    if (Extension::Fetch(type)->SlaveMinerSlave != nullptr) {
+        return true;
+    }
+
+    const TechnoTypeClass *other = type->RTTI == RTTI_BUILDINGTYPE
+        ? static_cast<const TechnoTypeClass *>(type->UndeploysInto)
+        : static_cast<const TechnoTypeClass *>(type->DeploysInto);
+
+    return other != nullptr && Extension::Fetch(other)->SlaveMinerSlave != nullptr;
+}
+
+
+/**
+ *  AF-0012: Is this Slave Miner a mobile refinery (no slaves, the building
+ *  has Refinery=yes)?
+ */
+bool SlaveManagerClass::Is_Mobile_Refinery_Type(const TechnoTypeClass *type)
+{
+    if (!Is_Slave_Miner_Type(type) || Has_Slave_Type(type)) {
+        return false;
+    }
+
+    const BuildingTypeClass *buildingtype = type->RTTI == RTTI_BUILDINGTYPE
+        ? static_cast<const BuildingTypeClass *>(type)
+        : type->DeploysInto;
+
+    return buildingtype != nullptr && buildingtype->IsRefinery;
 }
 
 
@@ -938,8 +1019,36 @@ void SlaveManagerClass::Set_Status(SlaveManagerStatus status)
     if (status != Status) {
         Slave_Log("M%-4d |       | miner status | %s -> %s", Manager_Index(), Manager_Status_Name(Status), Manager_Status_Name(status));
     }
+    if (status == SlaveManagerStatus::Deploying && Status != SlaveManagerStatus::Deploying) {
+        StateTimer = DEPLOY_TIMEOUT;
+    }
     Status = status;
     LastScanFrame = (status == SlaveManagerStatus::Idle) ? Frame : INT_MAX;
+}
+
+
+/**
+ *  AF-0012: Puts a computer miner back on guard without a destination.
+ */
+void SlaveManagerClass::Reset_Computer_Order(UnitClass *unit)
+{
+    unit->Assign_Destination(nullptr);
+    unit->Assign_Target(nullptr);
+    unit->Assign_Mission(MISSION_GUARD);
+    unit->Commence();
+}
+
+
+/**
+ *  AF-0012: Scans again, or gives up after too many failed attempts.
+ */
+void SlaveManagerClass::Retry_Or_Stop()
+{
+    if (++DeployAttempts >= MAX_DEPLOY_ATTEMPTS) {
+        Stop();
+    } else {
+        Set_Status(SlaveManagerStatus::Scanning);
+    }
 }
 
 
@@ -1082,10 +1191,37 @@ void SlaveManagerClass::AI_Idle()
     }
 
     /**
+     *  AF-0012: TS sends a computer unit on MISSION_HUNT when a deploy fails
+     *  (UnitClass::Mission_Unload). An unarmed miner then wanders off; it is
+     *  put back on guard so it can be woken up again.
+     */
+    UnitClass *idle_unit = Owner_Unit();
+    if (idle_unit != nullptr && !idle_unit->House->Is_Human_Player() &&
+        idle_unit->Get_Mission() == MISSION_HUNT && !idle_unit->Is_Weapon_Equipped()) {
+        Slave_Log("M%-4d |       | idle | computer miner on hunt, back to guard", Manager_Index());
+        Reset_Computer_Order(idle_unit);
+    }
+
+    /**
      *  Woken up (computer, or KickFrameDelay for humans): works like a harvest order.
      */
     if (Owner_Unit() != nullptr && Should_Wake_Up()) {
         HasHarvestOrder = true;
+
+        /**
+         *  AF-0012: The Advanced AI may send the miner to a field away from its
+         *  refineries, like a harvest order of the player. LastOre is still
+         *  unset for a miner fresh from the factory: it may drive to the far
+         *  field it was built for; a relocating one stays within MaxTravel.
+         */
+        if (!Owner->House->Is_Human_Player()) {
+            const Cell field = HouseClassExtension::AdvAI_Slave_Miner_Wake_Up_Field(Owner_Unit(), LastOre != CELL_NONE);
+            if (field != CELL_NONE) {
+                OrderedOre = field;
+                LastOre = field;
+            }
+        }
+
         Set_Status(SlaveManagerStatus::Scanning);
     }
 }
@@ -1180,6 +1316,14 @@ bool SlaveManagerClass::Should_Wake_Up() const
      *  delay after a failed scan so idle miners do not long-scan constantly.
      */
     if (!unit->House->Is_Human_Player()) {
+
+        /**
+         *  AF-0012: Not while it is still leaving the war factory; the factory
+         *  gives it its own exit orders.
+         */
+        if (Map[unit->Get_Cell()].Cell_Building() != nullptr) {
+            return false;
+        }
         return Frame > LastScanFrame + (delay > 0 ? delay : 0);
     }
 
@@ -1234,7 +1378,29 @@ void SlaveManagerClass::AI_Scanning()
 
     unit->Mark(MARK_UP);
     unit->Locomotion->Mark_All_Occupation_Bits(MARK_UP);
-    const Cell site = Find_Deploy_Site(this, unit->Class->DeploysInto, ore, here, unit->Class->MZone);
+    Cell site = Find_Deploy_Site(this, unit->Class->DeploysInto, ore, here, unit->Class->MZone);
+
+    /**
+     *  AF-0012: Inside a big field every cell around is Tiberium. Try the edge
+     *  of the field towards the vehicle, or towards its base when the vehicle
+     *  itself stands in the field.
+     */
+    if (site == CELL_NONE && ore != CELL_NONE) {
+        Cell toward = here;
+        if (Cell_Distance(here, ore) <= 2 * CELL_LEPTON_W || Map[here].Land_Type() == LAND_TIBERIUM) {
+            toward = unit->House->Center.As_Cell();
+        }
+        const Cell edge = Field_Edge(ore, toward);
+        if (edge != ore) {
+            site = Find_Deploy_Site(this, unit->Class->DeploysInto, edge, here, unit->Class->MZone);
+            Slave_Log("M%-4d |       | scan | no site at %d,%d, field edge %d,%d -> site %d,%d", Manager_Index(),
+                ore.X, ore.Y, edge.X, edge.Y, site.X, site.Y);
+            if (site != CELL_NONE) {
+                ore = edge;
+                LastOre = edge;
+            }
+        }
+    }
     unit->Locomotion->Mark_All_Occupation_Bits(MARK_DOWN);
     unit->Mark(MARK_DOWN);
 
@@ -1288,6 +1454,17 @@ void SlaveManagerClass::AI_Travelling()
 
     const MissionType mission = unit->Get_Mission();
     if (mission != MISSION_MOVE && mission != MISSION_GUARD && mission != MISSION_GUARD_AREA) {
+        Slave_Log("M%-4d |       | travel | mission %d, trip to %d,%d cancelled", Manager_Index(), (int)mission, DeploySite.X, DeploySite.Y);
+
+        /**
+         *  AF-0012: A computer miner never gets player orders; the game itself
+         *  changed the mission. Take it back and look again.
+         */
+        if (!unit->House->Is_Human_Player()) {
+            Reset_Computer_Order(unit);
+            Retry_Or_Stop();
+            return;
+        }
         Stop();
         return;
     }
@@ -1398,6 +1575,28 @@ void SlaveManagerClass::AI_Deploying()
     }
 
     if (unit->IsDeploying) {
+
+        /**
+         *  AF-0012: The deploy flag can stay set after the game cancelled the
+         *  deploy (the vehicle then drives off, still "deploying", and is never
+         *  woken up again). Give up once it left the site or took too long.
+         */
+        const bool moved = DeploySite != CELL_NONE && unit->Get_Cell() != DeploySite;
+        if (!moved && !StateTimer.Expired()) {
+            return;
+        }
+
+        const Cell here = unit->Get_Cell();
+        Slave_Log("M%-4d |       | deploy | aborted (%s), mission %d at %d,%d, site %d,%d", Manager_Index(),
+            moved ? "left site" : "timeout", (int)unit->Get_Mission(), here.X, here.Y, DeploySite.X, DeploySite.Y);
+        unit->IsDeploying = false;
+
+        if (!unit->House->Is_Human_Player()) {
+            Reset_Computer_Order(unit);
+            Retry_Or_Stop();
+            return;
+        }
+        Stop();
         return;
     }
 

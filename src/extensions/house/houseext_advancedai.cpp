@@ -2110,13 +2110,19 @@ const char* HouseClassExtension::Advanced_AI_Unit_Start_Limit(const TechnoTypeCl
     // Anti-aircraft units built against an air attack on the base are not team orders.
     if (Advanced_AI_Can_Hit_Air(type) && Advanced_AI_Air_Attackers() > 0) return nullptr;
 
-    // Harvesters, base rebuilders, mobile war factories (AF-0011) and engineers
-    // for capturing are not team orders.
+    // AF-0012: one Slave Miner order must not start in several war factories.
+    if (type->RTTI == RTTI_UNITTYPE && Is_AdvAI_Slave_Miner_Unit_Type(static_cast<const UnitTypeClass*>(type)) &&
+        RuleExtension->IsAdvancedAISlaveMiner && AdvAI_Slave_Miner_Count(true) >= RuleExtension->AdvancedAISlaveMinerMax) {
+        return "slave-miner-limit";
+    }
+
+    // Harvesters, base rebuilders, mobile war factories (AF-0011), Slave Miners
+    // (AF-0012) and engineers for capturing are not team orders.
     if (type->RTTI == RTTI_UNITTYPE) {
         const auto* unittype = static_cast<const UnitTypeClass*>(type);
         if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype) ||
             (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard) ||
-            Is_Mobile_War_Factory_Type(unittype)) return nullptr;
+            Is_Mobile_War_Factory_Type(unittype) || Is_AdvAI_Slave_Miner_Unit_Type(unittype)) return nullptr;
     }
     if (type->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(type)->IsEngineer) return nullptr;
 
@@ -2146,7 +2152,7 @@ const char* HouseClassExtension::Advanced_AI_Unit_Start_Limit(const TechnoTypeCl
             const auto* unittype = static_cast<const UnitTypeClass*>(ptype);
             if (unittype->IsToHarvest || unittype->IsToVeinHarvest ||
                 (unittype->DeploysInto != nullptr && unittype->DeploysInto->IsConstructionYard) ||
-                Is_Mobile_War_Factory_Type(unittype)) continue;
+                Is_Mobile_War_Factory_Type(unittype) || Is_AdvAI_Slave_Miner_Unit_Type(unittype)) continue;
         }
         if (ptype->RTTI == RTTI_INFANTRYTYPE && static_cast<const InfantryTypeClass*>(ptype)->IsEngineer) continue;
         if (team_for(ptype) == team) pending += ptype->Cost;
@@ -2327,7 +2333,8 @@ bool HouseClassExtension::Is_Advanced_AI_Economy_Phase_Limited(const TechnoTypeC
 
     if (type->RTTI == RTTI_UNITTYPE) {
         const auto* unittype = static_cast<const UnitTypeClass*>(type);
-        if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype)) return false;
+        if (unittype->IsToHarvest || unittype->IsToVeinHarvest || Needs_Advanced_AI_Recovery_Unit(unittype) ||
+            Is_AdvAI_Slave_Miner_Unit_Type(unittype)) return false;
     }
 
     const HouseClass* house = This_Const();

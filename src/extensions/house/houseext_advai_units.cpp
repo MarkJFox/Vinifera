@@ -60,6 +60,7 @@
 #include "unittype.h"
 #include "unittypeext.h"
 #include "vinifera_globals.h"
+#include "slavemanager.h"
 #include "weapontype.h"
 
 #include <algorithm>
@@ -969,11 +970,27 @@ int HouseClassExtension::AdvAI_Harvester_Shortfall(const UnitTypeClass* harveste
         return 0;
     }
 
+    const int perrefinery = std::max(1, RuleExtension->AdvancedAIHarvestersPerRefinery);
+
+    // AF-0012: Mobile refineries (Slave Miners without slaves) may keep another number.
+    const int permobile = RuleExtension->AdvancedAIMobileRefineryHarvesters >= 0
+        ? RuleExtension->AdvancedAIMobileRefineryHarvesters : perrefinery;
+
+    /**
+     *  AF-0012: Only refineries this harvester type can dock at (Dock=) count,
+     *  so a refinery served by another type (GATIBRIG: LOCUST) does not make
+     *  the AI build harvesters that cannot unload there.
+     */
+    std::vector<const BuildingTypeClass*> served;
     int refineries = 0;
+    int wanted = 0;
     for (int i = 0; i < Buildings.Count(); i++) {
         const BuildingClass* building = Buildings[i];
-        if (building->House == house && Is_Usable(building) && building->Class->IsRefinery && !building->Class->IsWeeder) {
+        if (building->House == house && Is_Usable(building) && building->Class->IsRefinery && !building->Class->IsWeeder &&
+            AdvAI_Can_Dock(harvester, building->Class)) {
             refineries++;
+            wanted += SlaveManagerClass::Is_Mobile_Refinery_Type(building->Class) ? permobile : perrefinery;
+            if (std::find(served.begin(), served.end(), building->Class) == served.end()) served.push_back(building->Class);
         }
     }
     if (refineries == 0) {
@@ -983,18 +1000,23 @@ int HouseClassExtension::AdvAI_Harvester_Shortfall(const UnitTypeClass* harveste
     /**
      *  Units already contains harvesters still in production (active, in limbo),
      *  so no separate factory pass is needed. Weeders don't serve Tiberium
-     *  refineries and don't count towards their quota.
+     *  refineries and don't count towards their quota. Only harvesters that can
+     *  dock at one of these refineries count.
      */
     int harvesters = 0;
     for (int i = 0; i < Units.Count(); i++) {
         const UnitClass* unit = Units[i];
         if (unit->House == house && unit->IsActive && unit->Strength > 0 && unit->Class->IsToHarvest && !unit->Class->IsToVeinHarvest) {
-            harvesters++;
+            for (const BuildingTypeClass* type : served) {
+                if (AdvAI_Can_Dock(unit->Class, type)) {
+                    harvesters++;
+                    break;
+                }
+            }
         }
     }
 
-    const int perrefinery = std::max(1, RuleExtension->AdvancedAIHarvestersPerRefinery);
-    const int shortfall = refineries * perrefinery - harvesters;
+    const int shortfall = wanted - harvesters;
     if (shortfall <= 0) {
         return 0;
     }
@@ -1122,6 +1144,22 @@ int HouseClassExtension::AdvAI_AI_Unit()
         return TICKS_PER_SECOND;
     }
 
+    /**
+     *  AF-0012: Refineries the first harvester type cannot dock at (a mobile
+     *  refinery served by LOCUST) get another type from HarvesterUnit=.
+     */
+    for (int i = 0; i < Rule->HarvesterUnit.Count(); i++) {
+        UnitTypeClass* other = Rule->HarvesterUnit[i];
+        if (other == nullptr || other == harvester || !AdvAI_Can_Produce(other, owned)) continue;
+        if (const int shortfall = AdvAI_Harvester_Shortfall(other); shortfall > 0) {
+            LastHarvesterBuildFrame = Frame;
+            house->BuildUnit = other->HeapID;
+            DEV_DEBUG_INFO("AF-0009U: house={} frame={} harvester-replacement={} missing={} (other dock)\n",
+                (int)house->HeapID, Frame, other->Name(), shortfall);
+            return TICKS_PER_SECOND;
+        }
+    }
+
     // AF-0009U: Anti-aircraft vehicles against flying attackers come first.
     if (AdvAI_Select_Air_Defense_Unit(RTTI_UNIT)) return TICKS_PER_SECOND;
 
@@ -1135,6 +1173,12 @@ int HouseClassExtension::AdvAI_AI_Unit()
     if (const UnitTypeClass* mobilewar = AdvAI_Mobile_War_Factory_To_Build(owned)) {
         house->BuildUnit = mobilewar->HeapID;
         DEV_DEBUG_INFO("AF-0011: house={} frame={} mobile-war ordered {}\n", (int)house->HeapID, Frame, mobilewar->Name());
+        return TICKS_PER_SECOND;
+    }
+
+    // AF-0012: A Slave Miner for a rich field far from the refineries.
+    if (const UnitTypeClass* slaveminer = AdvAI_Slave_Miner_To_Build(owned)) {
+        house->BuildUnit = slaveminer->HeapID;
         return TICKS_PER_SECOND;
     }
 
@@ -2238,6 +2282,7 @@ void HouseClassExtension::AdvAI_Expert_AI()
     }
 
     AdvAI_Mobile_War_Factory_AI();
+    AdvAI_Slave_Miner_AI();
 
     // Without construction yards and war factories we are unlikely to recover.
     // Send all combat vehicles into hunt mode once.
@@ -2251,6 +2296,7 @@ void HouseClassExtension::AdvAI_Expert_AI()
                 (unit->Class->DeploysInto == nullptr || !unit->Class->DeploysInto->IsConstructionYard) &&
                 !unit->Class->IsToHarvest && !unit->Class->IsToVeinHarvest &&
                 !Is_Mobile_War_Factory_Type(unit->Class) && // AF-0011: deploys instead (emergency).
+                !Is_AdvAI_Slave_Miner_Unit_Type(unit->Class) && // AF-0012: unarmed economy unit.
                 (unit->Team == nullptr || Extension::Fetch(unit->Team)->Is_AdvAI_Managed())) {
 
                 if (unit->Team != nullptr) {

@@ -101,7 +101,10 @@ HouseClassExtension::HouseClassExtension(const HouseClass *this_ptr) :
     IsMobileWarOwned(false),
     MobileWarSite(CELL_NONE),
     MobileWarAttempts(0),
-    MobileWarDeployedFrame(INT_MIN / 2)
+    MobileWarDeployedFrame(INT_MIN / 2),
+    SlaveMinerNextFrame(0),
+    SlaveMinerLostFrame(INT_MIN / 2),
+    SlaveMinerOwnedCount(0)
 {
     for (int i = 0; i < Tiberiums.Count(); i++)
     {
@@ -266,6 +269,7 @@ void HouseClassExtension::Object_CRC(CRCEngine& crc) const
     crc(IsMobileWarOwned);
     crc(MobileWarSite.X);
     crc(MobileWarSite.Y);
+    crc(SlaveMinerOwnedCount);
 }
 
 
