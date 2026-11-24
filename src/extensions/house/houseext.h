@@ -369,6 +369,7 @@ public:
      *  AF-0012: Called by SlaveManagerClass when a computer miner wakes up.
      */
     static Cell AdvAI_Slave_Miner_Wake_Up_Field(const UnitClass* unit, bool deployed);
+    static Cell AdvAI_Slave_Miner_Relocate_Field(const BuildingClass* building);
 
     bool Has_Prerequisite(int prerequisite);
     bool Has_Prerequisite(PrerequisiteGroupType group);

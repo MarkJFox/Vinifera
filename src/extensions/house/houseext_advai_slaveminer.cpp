@@ -92,6 +92,12 @@ bool Near(const Cell& cell, const Cell& target)
  */
 constexpr int MOBILE_REFINERY_RADIUS = 10;
 
+/**
+ *  A harvester that can only unload at mobile refineries and works farther
+ *  than this from all of them (its refinery moved away) is sent again.
+ */
+constexpr int MOBILE_REFINERY_STRAY_RADIUS = MOBILE_REFINERY_RADIUS * 2;
+
 
 bool Is_Tiberium_Harvester(const UnitClass* unit)
 {
@@ -298,6 +304,34 @@ Cell HouseClassExtension::AdvAI_Slave_Miner_Wake_Up_Field(const UnitClass* unit,
 
 
 /**
+ *  Called by the Slave Manager of a deployed computer miner whose field is
+ *  used up. Returns the edge of the next field (same rules as for a
+ *  relocating miner: at most AdvancedAISlaveMinerMaxTravel cells away), or
+ *  CELL_NONE to let the miner look around itself as before.
+ */
+Cell HouseClassExtension::AdvAI_Slave_Miner_Relocate_Field(const BuildingClass* building)
+{
+    if (building == nullptr || building->House == nullptr || building->House->Is_Human_Player()) return CELL_NONE;
+    if (!RuleExtension->IsAdvancedAISlaveMiner) return CELL_NONE;
+
+    const HouseClassExtension* ext = Extension::Fetch(building->House);
+    char reason[160] = "";
+    const Cell target = ext->AdvAI_Slave_Miner_Field(building, true, reason, sizeof(reason));
+    const Cell here(building->Center_Coord());
+    if (target == CELL_NONE) {
+        DEV_DEBUG_INFO("AF-0012: house={} frame={} slave-miner {} at {},{} relocates nearby ({})\n",
+            (int)building->House->HeapID, Frame, building->Class->Name(), here.X, here.Y, reason);
+        return CELL_NONE;
+    }
+
+    const Cell field = SlaveManagerClass::Field_Edge(target, here);
+    DEV_DEBUG_INFO("AF-0012: house={} frame={} slave-miner {} at {},{} relocates to {},{} ({})\n",
+        (int)building->House->HeapID, Frame, building->Class->Name(), here.X, here.Y, field.X, field.Y, reason);
+    return field;
+}
+
+
+/**
  *  Picks a Slave Miner to order, or nullptr. Called by AdvAI_AI_Unit when no
  *  other order is pending.
  */
@@ -496,8 +530,10 @@ void HouseClassExtension::AdvAI_Mobile_Refinery_AI()
      *  Who works where. A harvester counts for the first mobile refinery it can
      *  dock at (Dock= of its type) and works near. One that can only unload at
      *  mobile refineries (LOCUST) and already harvests or unloads works for the
-     *  nearest of them wherever it is, so it is not sent again and again; a
-     *  new or idle one is sent once. All others are free.
+     *  nearest of them, so it is not sent again and again; a new or idle one
+     *  is sent once. If even the nearest is more than
+     *  MOBILE_REFINERY_STRAY_RADIUS away (the refinery moved), it strays and
+     *  is free again, so it follows. All others are free.
      */
     /**
      *  Diagnosis: a harvester sent to a mobile refinery is watched for two
@@ -558,11 +594,13 @@ void HouseClassExtension::AdvAI_Mobile_Refinery_AI()
                     nearest_distance = distance;
                 }
             }
-            if (nearest >= 0) {
+            if (nearest >= 0 && nearest_distance <= MOBILE_REFINERY_STRAY_RADIUS) {
                 ++counts[nearest];
                 assigned = true;
                 counted = nearest;
                 via = "nearest";
+            } else if (nearest >= 0) {
+                via = "stray";
             }
         }
 

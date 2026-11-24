@@ -29,7 +29,7 @@ Der Code erkennt die Betriebsart an der INI:
 
 - **Nur passende Sammler:** Es zählen nur Sammler, deren Typ dort andocken kann (`Dock=` des Sammlers; eine leere Liste gilt als „jede Raffinerie“). In Aftermath ist das `LOCUST` (`Dock=GATIBRIG,GATIBRIG2`); `HARV` (`Dock=PROC`) wird nie zugeordnet.
 - Ein Sammler gehört zu ihr, wenn er dort andocken kann und im Umkreis von 10 Zellen steht, dorthin fährt oder dort zuletzt geerntet hat.
-- Ein Sammler, der nur an mobilen Raffinerien abladen kann (`LOCUST`) und schon erntet, andockt oder entlädt, gehört zur nächsten passenden mobilen Raffinerie, egal wo er erntet. Er lädt ohnehin nur dort ab. Vorher wurde er alle paar Sekunden neu geschickt, wenn er weiter als 10 Zellen entfernt erntete. Ein neuer oder untätiger `LOCUST` wird einmal geschickt.
+- Ein Sammler, der nur an mobilen Raffinerien abladen kann (`LOCUST`) und schon erntet, andockt oder entlädt, gehört zur nächsten passenden mobilen Raffinerie, egal wo er erntet. Er lädt ohnehin nur dort ab. Vorher wurde er alle paar Sekunden neu geschickt, wenn er weiter als 10 Zellen entfernt erntete. Ein neuer oder untätiger `LOCUST` wird einmal geschickt. Ist auch die nächste mobile Raffinerie mehr als 20 Zellen entfernt (sie ist umgezogen), gilt er als verirrt (`stray`) und wird wieder frei, also der Raffinerie hinterhergeschickt, der Sammler fehlen.
 - Fehlen Sammler, schickt die KI alle zwei Sekunden höchstens einen freien, passenden Sammler pro Raffinerie dorthin, den nächstgelegenen, mit einem Ernteauftrag auf das Tiberium neben ihr. Danach erntet er dort und lädt dort ab, weil sie die nächste Raffinerie ist.
 - Frei ist ein Sammler, der zu keiner mobilen Raffinerie gehört, in keinem Team ist und nicht gerade andockt oder entlädt. Jede feste Raffinerie behält mindestens einen freien Sammler, der bei ihr andocken kann. Sammler, die bei keiner festen Raffinerie andocken können, dürfen alle gehen.
 - Anzahl: `AdvancedAIMobileRefineryHarvesters`, Standard -1 = `AdvancedAIHarvestersPerRefinery`. Der `FreeUnit=`-Sammler zählt mit.
@@ -64,6 +64,8 @@ Sammler haben Vorrang: Fehlt der KI ein normaler Sammler, baut sie zuerst diesen
 Von den passenden Feldern gewinnt das mit dem höchsten Wert im Verhältnis zur Entfernung. Für einen neuen Auftrag zählt die Entfernung von der Basis, für einen vorhandenen Miner (etwa nach einem gescheiterten Umzug) die Entfernung vom Miner selbst. Ein frisch gebauter Miner (noch nie aufgebaut) gilt als neuer Auftrag: Er fährt ohne `MaxTravel`-Grenze zu dem Feld, für das er gebaut wurde. Vorher fuhr ein Miner nach einem gescheiterten Umzug bis zu 84 Zellen quer über die Karte und wurde unterwegs zerstört.
 
 **Losschicken:** Wacht ein Slave Miner der KI auf (fertig gebaut, nach einem Umzug ohne Ziel oder nach einem Fehlschlag), fragt der Slave-Miner-Code die KI nach einem Feld. Liegt es mehr als 10 Zellen entfernt, bekommt der Miner es wie einen Ernteauftrag des Spielers. Danach übernimmt der Slave-Miner-Code wie bisher: Bauplatz suchen, hinfahren, entfalten, später umziehen. Ohne passendes Feld oder in der Nähe sucht der Miner wie bisher selbst (Log `scans nearby (…)` mit dem Grund).
+
+**Umzug:** Findet ein aufgebauter Miner der KI im kleinen Umkreis kein Tiberium mehr und liegt das nächste Tiberium der großen Suche mehr als 12 Zellen entfernt (oder gibt es keins), ist sein Feld verbraucht. Dann wählt die KI das nächste Feld nach denselben Regeln wie für einen vorhandenen Miner (höchstens `AdvancedAISlaveMinerMaxTravel` Zellen, kein Gegner, keine gegnerische Raffinerie, nicht belegt). Vorher kroch der Miner von Tiberium zu Tiberium der großen Suche weiter und landete so beim Gegner. Findet die KI kein Feld, zieht der Miner wie bisher selbst um. Tiberium innerhalb von 12 Zellen gehört noch zum alten Feld; dort bleibt es beim normalen Umzug.
 
 **Absicherung im Slave-Miner-Code** (nach dem ersten Test):
 
@@ -110,8 +112,10 @@ Im Entwicklermodus schreibt das Debug-Log Zeilen mit `AF-0012:`:
 | `slave-miner ordered` | Bauauftrag erteilt, mit Feld und Anzahl |
 | `slave-miner ... sent to` | Miner zu einem Feld geschickt (bei vorhandenen Minern mit `travel=`) |
 | `slave-miner ... scans nearby (…)` | Kein Feld für diesen Miner; er sucht selbst in der Nähe |
+| `slave-miner ... relocates to x,y (…)` | Feld verbraucht, die KI schickt den aufgebauten Miner zum nächsten Feld |
+| `slave-miner ... relocates nearby (…)` | Feld verbraucht, aber kein passendes Feld; er zieht wie bisher selbst um |
 | `mobile-refinery … harvesters n/m: sent …` | Sammler zur mobilen Raffinerie geschickt (n = vorher dort, m = gewünscht) |
-| `sent … for x,y at x,y counts …` | Ein entsandter Sammler wird zwei Minuten beobachtet; bei jeder Änderung steht, wo er zählt: `near` (arbeitet bei einer mobilen Raffinerie), `nearest` (erntet woanders, zählt für die nächste), `free`, `busy`, `limbo` oder `team`, mit Mission, NavCom und ArchiveTarget |
+| `sent … for x,y at x,y counts …` | Ein entsandter Sammler wird zwei Minuten beobachtet; bei jeder Änderung steht, wo er zählt: `near` (arbeitet bei einer mobilen Raffinerie), `nearest` (erntet woanders, zählt für die nächste), `stray` (verirrt, wird wieder geschickt), `free`, `busy`, `limbo` oder `team`, mit Mission, NavCom und ArchiveTarget |
 | `sent harvester for x,y gone` | Der beobachtete Sammler ist zerstört oder nicht mehr aktiv |
 | `slave-miner lost` | Weniger Miner als beim letzten Durchlauf, Wiederaufbau-Sperre beginnt |
 | `slave-miner skip reason=…` | Warum kein Bauauftrag kommt; bei Änderung, höchstens einmal pro Minute je Haus |
@@ -123,7 +127,7 @@ Gründe bei `skip`: `delay`, `rebuild-delay`, `start-rush-threat`, `recently-att
 - Gefahr wird nur über den Abstand zu gegnerischen Basen gemessen, nicht über Einheiten auf dem Weg.
 - Kommt ein Miner nicht an sein Feld (Weg blockiert), versucht er es nach jedem Aufwachen erneut.
 - Ein eigenes Begleitschutz-Team gibt es nicht.
-- Mobile Raffinerie: Der Umzug richtet sich noch nach dem kleinen Umkreis um das Gebäude (wie beim Sklaven-Miner), nicht nach dem Ernteumkreis der Sammler. Die Sammler fahren beim Umzug nicht mit, sondern werden erst nach dem Entfalten am neuen Platz wieder zugeordnet.
+- Mobile Raffinerie: Ob umgezogen wird, entscheidet noch der kleine Umkreis um das Gebäude (wie beim Sklaven-Miner), nicht der Ernteumkreis der Sammler. Die Sammler fahren nicht gleichzeitig mit, sondern folgen erst nach dem Entfalten am neuen Platz.
 - Ein Sammler, der voll ist und weiter weg erntet, kann trotzdem zu einer anderen Raffinerie fahren, wenn die näher liegt.
 
 ## Offene Tests

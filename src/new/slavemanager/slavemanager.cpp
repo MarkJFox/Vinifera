@@ -1695,6 +1695,27 @@ void SlaveManagerClass::Check_Relocation(BuildingClass *building)
         ore = Find_Tiberium(center, Long_Scan());
     }
 
+    /**
+     *  AF-0012: a computer miner does not creep from ore to ore along the
+     *  long scan once its field is used up (that led miners into enemy
+     *  bases); the Advanced AI picks its next field. Ore within
+     *  MAX_DEPLOY_SITE_RADIUS still belongs to the current field.
+     */
+    if (!building->House->Is_Human_Player() && !walled_in &&
+        (ore == CELL_NONE || Cell_Distance(center, ore) > MAX_DEPLOY_SITE_RADIUS * CELL_LEPTON_W)) {
+        const Cell field = HouseClassExtension::AdvAI_Slave_Miner_Relocate_Field(building);
+        if (field != CELL_NONE) {
+            Slave_Log("M%-4d |       | relocate check | field used up, Advanced AI field %d,%d", Manager_Index(), field.X, field.Y);
+            if (!Relocate(building, field, false)) {
+                LastRelocationScanFrame = Frame + RELOCATION_SETTLE_DELAY - RELOCATION_SCAN_DELAY;
+            }
+            return;
+        }
+        if (ore == CELL_NONE) {
+            LastRelocationScanFrame = Frame + RELOCATION_SETTLE_DELAY - RELOCATION_SCAN_DELAY;
+        }
+    }
+
     if (ore == CELL_NONE) {
         return;
     }
