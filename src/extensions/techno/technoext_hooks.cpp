@@ -20,6 +20,7 @@
 #include "bullettypeext.h"
 #include "cell.h"
 #include "clipline.h"
+#include "custompalette.h"
 #include "debughandler.h"
 #include "drawshape.h"
 #include "extension.h"
@@ -4021,6 +4022,59 @@ DEFINE_HOOK(0x0062D92F, _TechnoClass_Evaluate_Cell_Carryall_Ground_Check_Patch, 
     }
 
     return 0;
+}
+
+
+/**
+ *  Custom palettes: draws SHP objects whose type sets "Palette=" in ART.INI
+ *  through a converter built from that palette for the owner's color scheme.
+ *
+ *  Patches the default branch of TechnoClass::Techno_Draw_Object that fetches
+ *  ColorSchemes[House->Scheme]->Converter. The branches before it (buildings
+ *  with TerrainPalette=yes use the cell drawer, units compositing to the 8-bit
+ *  surface use EightBitDrawer) are left as they are.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00634F40, _TechnoClass_Techno_Draw_Object_Custom_Palette_Patch, 6)
+{
+    GET(TechnoClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = CustomPalette::Techno_Converter(this_ptr->Techno_Type_Class(), this_ptr->House->Scheme);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Continue at "mov [esp+0x14], edx", where the game stores the converter.
+     */
+    R->EDX(drawer);
+    return 0x00634F5A;
+}
+
+
+/**
+ *  Custom palettes: a disguised infantry seen by an enemy is drawn with the
+ *  viewing player's color scheme. Keep its custom palette in that case, so the
+ *  disguise looks like the same infantry of the player's own house.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00635075, _TechnoClass_Techno_Draw_Object_Custom_Palette_Disguise_Patch, 6)
+{
+    GET(TechnoClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = CustomPalette::Techno_Converter(this_ptr->Techno_Type_Class(), PlayerPtr->Scheme);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Continue at "mov [esp+0x14], edx; mov ebx, edx", where the game stores
+     *  the converter.
+     */
+    R->EDX(drawer);
+    return 0x0063508F;
 }
 
 

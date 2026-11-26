@@ -14,6 +14,7 @@
 #include "animtype.h"
 #include "buildingtype.h"
 #include "ccini.h"
+#include "custompalette.h"
 #include "debughandler.h"
 #include "hooker.h"
 #include "iomap.h"
@@ -445,6 +446,12 @@ DEFINE_HOOK(0x004E7D78, _Init_Theater_Palette_Theater_Patch, 0)
     }
 
     std::snprintf(_buffer, sizeof(_buffer), "UNIT%s.PAL", TheaterTypeClass::Suffix_From(theater));
+
+    /**
+     *  Custom palette files depend on the theater, so drop the loaded ones.
+     *  They are loaded again on first use.
+     */
+    CustomPalette::Clear();
 
 retrieve_file:
     R->ECX(_buffer);

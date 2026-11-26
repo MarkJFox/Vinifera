@@ -21,6 +21,7 @@
 #include "audio_vox.h"
 #include "bsurface.h"
 #include "building.h"
+#include "custompalette.h"
 #include "buildingext.h"
 #include "buildingext_init.h"
 #include "buildingtype.h"
@@ -3823,6 +3824,104 @@ static ResultType __fastcall Observe_Advanced_AI_Building_Damage(BuildingClass* 
     }
     return result;
 }
+
+
+/**
+ *  Custom palettes: the converter that building animations with
+ *  ShouldUseCellDrawer=yes are drawn with. Returns nullptr to keep the game's
+ *  converter, also for TerrainPalette=yes buildings, whose body ignores the
+ *  custom palette as well.
+ *
+ *  @author: Aftermath
+ */
+static ConvertClass *Building_Anim_Custom_Palette_Converter(const BuildingClass *building)
+{
+    if (building->Class->IsTerrainPalette) {
+        return nullptr;
+    }
+
+    return CustomPalette::Techno_Converter(building->Class, building->House->Scheme);
+}
+
+
+/**
+ *  Custom palettes: building animations take the building's custom palette.
+ *
+ *  Patches BuildingClass::Create_Anim where a new animation that uses the cell
+ *  drawer gets ColorSchemes[House->Scheme]->Converter as its alternative drawer.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x004363CC, _BuildingClass_Create_Anim_Custom_Palette_Patch, 6)
+{
+    GET(BuildingClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Building_Anim_Custom_Palette_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Continue at "mov ecx, esi; mov [ebx+0x70], edx", where the game stores
+     *  the drawer in the animation.
+     */
+    R->EDX(drawer);
+    return 0x004363D2;
+}
+
+
+/**
+ *  Custom palettes: keep the building's custom palette on its animations.
+ *
+ *  Patches BuildingClass::Animation_AI, which hands
+ *  ColorSchemes[House->Scheme]->Converter to Set_Anim_Drawer on every logic
+ *  frame and so would overwrite the drawer set in Create_Anim.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00435ADE, _BuildingClass_Animation_AI_Custom_Palette_Patch, 6)
+{
+    GET(BuildingClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Building_Anim_Custom_Palette_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Continue at "mov ecx, esi; push edx; call Set_Anim_Drawer".
+     */
+    R->EDX(drawer);
+    return 0x00435AE4;
+}
+
+
+/**
+ *  Custom palettes: keep the building's custom palette on its animations when
+ *  their appearance is updated (lighting changes and the like).
+ *
+ *  Patches BuildingClass::Update_Anim_Appearance where the inlined
+ *  Set_Anim_Drawer fetches ColorSchemes[House->Scheme]->Converter.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00436668, _BuildingClass_Update_Anim_Appearance_Custom_Palette_Patch, 6)
+{
+    GET(BuildingClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Building_Anim_Custom_Palette_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Continue at "mov [esp+0x18], ecx", where the game keeps the drawer
+     *  for the loop over the animations.
+     */
+    R->ECX(drawer);
+    return 0x0043666E;
+}
+
 
 /**
  *  Main function for patching the hooks.

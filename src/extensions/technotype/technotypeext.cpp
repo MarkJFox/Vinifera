@@ -130,7 +130,8 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const TechnoTypeClass *this_p
     SlaveMinerRegenRate(500),
     SlaveMinerReloadRate(25),
     SlaveMinerSlaveScan(-1),
-    SlaveMinerHarvestRate(-1)
+    SlaveMinerHarvestRate(-1),
+    PaletteName()
 {
 }
 
@@ -147,7 +148,8 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const NoInitClass &noinit) :
     VoiceDeploy(noinit),
     VoiceHarvest(noinit),
     BuiltAt(noinit),
-    ScrapExplosion(noinit)
+    ScrapExplosion(noinit),
+    PaletteName(noinit)
 {
 }
 
@@ -370,7 +372,19 @@ bool TechnoTypeClassExtension::Read_INI(CCINIClass &ini)
      *  @author: CCHyper
      */
     This()->WalkRate = ArtINI.Get_Int(graphic_name, "WalkRate", This()->WalkRate);
-    
+
+    /**
+     *  Custom palette for the SHP graphics of this type. Read from the image
+     *  section like in Yuri's Revenge; the theater suffix and ".PAL" are added
+     *  when the palette is loaded (see CustomPalette).
+     */
+    char palette_buffer[32];
+    if (ArtINI.Get_String(graphic_name, "Palette", PaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        PaletteName = palette_buffer;
+    } else {
+        PaletteName.clear();
+    }
+
     CloakSound = ini.Get_VocType(ini_name, "CloakSound", CloakSound);
     UncloakSound = ini.Get_VocType(ini_name, "UncloakSound", UncloakSound);
     IsShakeScreen = ini.Get_Bool(ini_name, "CanShakeScreen", IsShakeScreen);

@@ -495,4 +495,12 @@ public:
      *  Falls back to VeteranSightRange when not provided.
      */
     int EliteSightRange;
+
+    /**
+     *  Custom palette for SHP graphics, read from the ART.INI image section
+     *  ("Palette="). The theater suffix and ".PAL" are appended when the
+     *  palette is loaded, as in Yuri's Revenge. Empty means the theater's UNIT
+     *  palette is used. See CustomPalette for how it is drawn.
+     */
+    FixedString<32> PaletteName;
 };
