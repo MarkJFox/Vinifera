@@ -52,11 +52,13 @@ private:
         const ShapeSet* IconShape = nullptr;
     };
 
+    void Load_Art();
     void Collect_Players(std::vector<HouseClass*>& players) const;
     void Draw_Tile(Surface& surface, const Rect& rect, const HouseClass& house, const Point2D& point) const;
     int Max_Top_Index(int count) const;
 
     std::vector<TileArt> Art;
+    bool IsArtLoaded = false;
     TPoint2D<int> Origin = { 24, 26 };
     TPoint2D<int> TileSize = { 131, 102 };
     int TilePitch = 102;

@@ -157,12 +157,29 @@ void SidebarObserverView::Init_Clear()
 
 
 /**
- *  Loads the tile art for every side.
+ *  Drops the tile art. It is loaded again on the next draw.
+ *
+ *  This runs during a savegame load (Prep_For_Side), before the swizzle
+ *  manager has restored the side extension pointers, so the side extensions
+ *  must not be read here.
  *
  *  @author: Aftermath
  */
 void SidebarObserverView::Init_For_House()
 {
+    Art.clear();
+    IsArtLoaded = false;
+}
+
+
+/**
+ *  Loads the tile art for every side.
+ *
+ *  @author: Aftermath
+ */
+void SidebarObserverView::Load_Art()
+{
+    IsArtLoaded = true;
     Art.clear();
     Art.resize(Sides.Count());
 
@@ -219,6 +236,10 @@ void SidebarObserverView::Set_Layout(SidebarViewType view_type, int rows_per_col
  */
 void SidebarObserverView::Draw(Surface& surface, const Rect& rect)
 {
+    if (!IsArtLoaded) {
+        Load_Art();
+    }
+
     std::vector<HouseClass*> players;
     Collect_Players(players);
 
