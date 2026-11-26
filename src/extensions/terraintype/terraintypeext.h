@@ -97,4 +97,11 @@ TerrainTypeClassExtension final : public ObjectTypeClassExtension
          *  If SpawnsTiberium=yes, should TIberium be spawned randomly in the range instead of spreading from the center.
          */
         bool IsTiberiumScatterSpawn;
+
+        /**
+         *  Aftermath: Custom palette to draw this terrain object with in place
+         *  of the theater's iso palette (ART.INI "Palette=" in the image
+         *  section). Empty when not set. Resolved like TechnoTypes.
+         */
+        FixedString<32> PaletteName;
 };

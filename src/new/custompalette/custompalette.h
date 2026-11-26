@@ -12,7 +12,9 @@
 
 class AnimTypeClass;
 class ConvertClass;
+class LightConvertClass;
 class TechnoTypeClass;
+class TerrainTypeClass;
 
 
 /**
@@ -50,6 +52,15 @@ namespace CustomPalette
      *  or the file could not be loaded.
      */
     ConvertClass *Anim_Remap_Converter(const AnimTypeClass *type, int scheme);
+
+    /**
+     *  Fetches the converter to draw the given terrain type with, in place of
+     *  the cell's drawer (the iso palette with the cell's light). The converter
+     *  gets the same light tint and ion storm state as cell_drawer. Returns
+     *  nullptr when the type has no custom palette or the file could not be
+     *  loaded.
+     */
+    ConvertClass *Terrain_Converter(const TerrainTypeClass *type, const LightConvertClass *cell_drawer);
 
     /**
      *  Releases all palettes and converters. Called whenever the theater is set up,

@@ -25,6 +25,8 @@
 #include "scenario.h"
 #include "technotype.h"
 #include "technotypeext.h"
+#include "terraintype.h"
+#include "terraintypeext.h"
 #include "theatertype.h"
 #include "tibsun_globals.h"
 
@@ -70,6 +72,18 @@ struct SchemeDrawer
 
 
 /**
+ *  A converter of a custom palette for one cell light tint.
+ */
+struct TintDrawer
+{
+    int RedTint = 0;
+    int GreenTint = 0;
+    int BlueTint = 0;
+    LightConvertClass *Drawer = nullptr;
+};
+
+
+/**
  *  A loaded custom palette and its converters, one slot per color scheme.
  */
 struct PaletteEntry
@@ -84,7 +98,45 @@ struct PaletteEntry
      *  for ANIM.PAL. Used by animations.
      */
     ConvertClass *PlainDrawer = nullptr;
+
+    /**
+     *  Converters for terrain objects, one per cell light tint, built like
+     *  the game's iso tile drawers (IsometricTileTypeClass::Find_Or_Make_Drawer).
+     */
+    std::vector<TintDrawer *> TintDrawers;
 };
+
+
+/**
+ *  The tint a LightConvertClass was built with and its ion storm state. The
+ *  members are private in TS++, so they are read at the offsets the game
+ *  uses (LightConvertClass::Apply_Tint at 0x00502B90).
+ */
+struct LightConvertTint
+{
+    int NormalRed;
+    int NormalGreen;
+    int NormalBlue;
+    int IonRed;
+    int IonGreen;
+    int IonBlue;
+    bool UseIonLighting;
+};
+
+LightConvertTint Read_Tint(const LightConvertClass &drawer)
+{
+    const unsigned char *bytes = reinterpret_cast<const unsigned char *>(&drawer);
+
+    LightConvertTint tint;
+    std::memcpy(&tint.NormalRed, bytes + 0x1A0, sizeof(int));
+    std::memcpy(&tint.NormalGreen, bytes + 0x1A4, sizeof(int));
+    std::memcpy(&tint.NormalBlue, bytes + 0x1A8, sizeof(int));
+    std::memcpy(&tint.IonRed, bytes + 0x1AC, sizeof(int));
+    std::memcpy(&tint.IonGreen, bytes + 0x1B0, sizeof(int));
+    std::memcpy(&tint.IonBlue, bytes + 0x1B4, sizeof(int));
+    tint.UseIonLighting = bytes[0x1B8] != 0;
+    return tint;
+}
 
 
 /**
@@ -354,6 +406,74 @@ ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
 
 
 /**
+ *  Fetches the converter to draw the given terrain type with in a cell whose
+ *  own drawer is cell_drawer.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Terrain_Converter(const TerrainTypeClass *type, const LightConvertClass *cell_drawer)
+{
+    if (type == nullptr || cell_drawer == nullptr) {
+        return nullptr;
+    }
+
+    const TerrainTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr || typeext->PaletteName.empty()) {
+        return nullptr;
+    }
+
+    PaletteEntry *entry = Fetch_Entry(typeext->PaletteName.c_str());
+    if (!entry->IsValid) {
+        return nullptr;
+    }
+
+    const LightConvertTint cell_tint = Read_Tint(*cell_drawer);
+
+    /**
+     *  One converter per light tint, as the game does for iso tiles. The tint
+     *  values are already clamped by the game when the cell drawer was made.
+     */
+    TintDrawer *drawer = nullptr;
+    for (TintDrawer *candidate : entry->TintDrawers) {
+        if (candidate->RedTint == cell_tint.NormalRed
+            && candidate->GreenTint == cell_tint.NormalGreen
+            && candidate->BlueTint == cell_tint.NormalBlue) {
+            drawer = candidate;
+            break;
+        }
+    }
+
+    if (drawer == nullptr) {
+        drawer = new TintDrawer;
+        drawer->RedTint = cell_tint.NormalRed;
+        drawer->GreenTint = cell_tint.NormalGreen;
+        drawer->BlueTint = cell_tint.NormalBlue;
+        drawer->Drawer = new LightConvertClass(&entry->Palette, &GamePalette, VisibleSurface,
+            cell_tint.NormalRed, cell_tint.NormalGreen, cell_tint.NormalBlue, !entry->TintDrawers.empty());
+        entry->TintDrawers.push_back(drawer);
+    }
+
+    /**
+     *  Follow the ion storm state of the cell drawer, which the game switches
+     *  for all tile drawers when a storm starts or ends.
+     */
+    const LightConvertTint tint = Read_Tint(*drawer->Drawer);
+    if (cell_tint.UseIonLighting) {
+        if (!tint.UseIonLighting
+            || tint.IonRed != cell_tint.IonRed
+            || tint.IonGreen != cell_tint.IonGreen
+            || tint.IonBlue != cell_tint.IonBlue) {
+            drawer->Drawer->Apply_Tint(cell_tint.IonRed, cell_tint.IonGreen, cell_tint.IonBlue, true);
+        }
+    } else if (tint.UseIonLighting) {
+        drawer->Drawer->Apply_Tint(-1, -1, -1, false);
+    }
+
+    return drawer->Drawer;
+}
+
+
+/**
  *  Releases all palettes and converters.
  *
  *  @author: Aftermath
@@ -361,6 +481,10 @@ ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
 void CustomPalette::Clear()
 {
     for (PaletteEntry *entry : Entries) {
+        for (TintDrawer *drawer : entry->TintDrawers) {
+            delete drawer->Drawer;
+            delete drawer;
+        }
         delete entry->PlainDrawer;
         for (SchemeDrawer *drawer : entry->Drawers) {
             if (drawer != nullptr) {

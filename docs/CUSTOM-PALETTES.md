@@ -1,12 +1,12 @@
-# Custom Paletten – SHP-Objekte und Animationen
+# Custom Paletten – SHP-Objekte, Animationen und Terrain
 
-Stand: 2026-11-26, Branch `feature/custom-palettes`. Gebäudekörper und Gebäudeanimationen im Spiel getestet. Freie Animationen (`[AnimType] Palette=`) kompiliert, aber noch **nicht im Spiel getestet**.
+Stand: 2026-11-26, Branch `feature/custom-palettes`. Gebäudekörper und Gebäudeanimationen im Spiel getestet. Freie Animationen und Remap im Spiel getestet. Terrain (`Palette=` in der Bild-Sektion eines TerrainTypes) kompiliert, aber noch **nicht im Spiel getestet**.
 
 Hintergrund und Analyse: `../../analysis/CUSTOM-PALETTEN-BERICHT.md`.
 
 ## Verwendung
 
-In der Bild-Sektion der ART.INI (der Sektion, auf die `Image=` zeigt), oder in der ART.INI-Sektion einer Animation:
+In der Bild-Sektion der ART.INI (der Sektion, auf die `Image=` zeigt) bei Einheiten, Gebäuden und Terrain, oder in der ART.INI-Sektion einer Animation:
 
 ```ini
 [MYUNIT]
@@ -34,7 +34,8 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
   - Gekachelte Animationen ignorieren `AltPalette` wie im Original, außer zusammen mit `Palette=`.
   - Beispiel: Explosionen mit `Palette=fire` ohne Remap, ein Fallschirm mit `Palette=para` und `AltPalette=yes` in Hausfarbe.
 - **Ausnahmen bei Animationen:** Tiberium-Adern (`IsVeins`), an Zellen gebundene Animationen und Animationen, die vom Gebäude einen Drawer bekommen haben, behalten den Converter des Spiels.
-- **Nicht erfasst:** Voxel, Projektile, Partikel, Terrain, Overlays und Cameos.
+- **Terrain** (Bäume, Felsen und andere TerrainTypes) mit `Palette=` wird mit dieser Palette statt der Iso-Palette des Theaters gezeichnet. Das Licht kommt wie bisher von der Zelle: Für jede Licht-Tönung gibt es einen eigenen Converter, wie bei den Iso-Tiles, und der Ionensturm wird vom Zell-Drawer übernommen. Keine Hausfarben. Terrain mit `SpawnsTiberium=yes` behält den Tiberium-Drawer, der Schatten wird wie bisher gezeichnet.
+- **Nicht erfasst:** Voxel, Projektile, Partikel, Overlays und Cameos.
 - **Hausfarben (nur Techno-Objekte):** Die Einträge 16–31 werden mit der Hausfarbe des Besitzers ersetzt, genau wie bei der UNIT-Palette. Die Farben an diesen Stellen der eigenen Palette werden also nie angezeigt.
 - **Licht (Techno-Objekte):** Helligkeit und Ionensturm-Tönung wirken wie bei normalen Objekten.
 - **Leuchtfarben 240–254:** Diese Einträge werden wie im Original (TS und YR, Tönungsmaske bei `0x70CEAC`) nicht abgedunkelt. Wer dort normale Farben ablegt oder sie im SHP benutzt, sieht helle Pixel bei dunklem Licht. Für Flächen, die nicht leuchten sollen, im SHP andere Indizes verwenden.
@@ -43,10 +44,10 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
 
 ## Technik
 
-- `TechnoTypeClassExtension::PaletteName` und `AnimTypeClassExtension::PaletteName` halten den Namen aus `Palette=`. Sie werden mit dem Spielstand gespeichert.
-- `CustomPalette` (`src/new/custompalette/`) lädt jede Palette beim ersten Gebrauch. Pro Farbschema baut es einen `LightConvertClass` mit der Rampe der Hausfarbe des Schemas, derselben Zahl an Helligkeitsstufen und derselben Tönungsmaske wie das Spiel. Für Animationen gibt es pro Palette einen einfachen `ConvertClass` mit 63 Helligkeitsstufen, gebaut wie der `AnimDrawer` des Spiels. Converter werden nicht gespeichert und bei `Init_Theater` verworfen.
+- `TechnoTypeClassExtension::PaletteName`, `AnimTypeClassExtension::PaletteName` und `TerrainTypeClassExtension::PaletteName` halten den Namen aus `Palette=`. Sie werden mit dem Spielstand gespeichert.
+- `CustomPalette` (`src/new/custompalette/`) lädt jede Palette beim ersten Gebrauch. Pro Farbschema baut es einen `LightConvertClass` mit der Rampe der Hausfarbe des Schemas, derselben Zahl an Helligkeitsstufen und derselben Tönungsmaske wie das Spiel. Für Animationen gibt es pro Palette einen einfachen `ConvertClass` mit 63 Helligkeitsstufen, gebaut wie der `AnimDrawer` des Spiels. Für Terrain gibt es pro Palette und Licht-Tönung einen `LightConvertClass`, gebaut wie die Iso-Tile-Drawer (`IsometricTileTypeClass::Find_Or_Make_Drawer`). Tönung und Ionensturm-Zustand liest es aus dem Zell-Drawer (Offsets `0x1A0`–`0x1B8`, aus `LightConvertClass::Apply_Tint`). Converter werden nicht gespeichert und bei `Init_Theater` verworfen.
 - Ionensturm: Beim ersten Gebrauch nach Beginn oder Ende eines Sturms wird die Tönung nachgezogen (`Apply_Tint`).
-- Hooks: `0x00634F40` (normaler Converter) und `0x00635075` (verkleidete Infanterie) in `Techno_Draw_Object`. Für Gebäudeanimationen `0x004363CC` in `BuildingClass::Create_Anim`, `0x00435ADE` in `BuildingClass::Animation_AI` (setzt den Drawer in jedem Logik-Frame neu) und `0x00436668` in `BuildingClass::Update_Anim_Appearance` (dort ist `Set_Anim_Drawer` eingebettet). Für freie Animationen `0x004148AA` (Wahl von `AnimDrawer`/`AltPalette` in `AnimClass::Draw_It`) und `0x00414AAB` (gekachelte Animationen).
+- Hooks: `0x00634F40` (normaler Converter) und `0x00635075` (verkleidete Infanterie) in `Techno_Draw_Object`. Für Gebäudeanimationen `0x004363CC` in `BuildingClass::Create_Anim`, `0x00435ADE` in `BuildingClass::Animation_AI` (setzt den Drawer in jedem Logik-Frame neu) und `0x00436668` in `BuildingClass::Update_Anim_Appearance` (dort ist `Set_Anim_Drawer` eingebettet). Für freie Animationen `0x004148AA` (Wahl von `AnimDrawer`/`AltPalette` in `AnimClass::Draw_It`) und `0x00414AAB` (gekachelte Animationen). Für Terrain `0x0063FB54` in `TerrainClass::Draw_It` (dort lädt das Spiel den Zell-Drawer).
 
 ## Testplan
 
@@ -62,3 +63,5 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
 10. Gekachelte Animation (`Tiled=yes`) und Animation mit `AltPalette=yes` jeweils mit `Palette=`.
 11. Gebäudeanimation mit `ShouldUseCellDrawer=no` und eigenem `Palette=`.
 12. Fallschirm (Paradrop) mit `AltPalette=yes`, einmal mit und einmal ohne `Palette=`, bei zwei Hausfarben.
+13. Baum mit `Palette=` neben einem Baum ohne, bei Tag und Nacht, unter einer Lampe (Lichtquelle) und im Ionensturm.
+14. Terrain mit `Palette=` nach Speichern und Laden.

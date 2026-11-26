@@ -12,6 +12,8 @@
 #include "terrainext_hooks.h"
 
 #include "asserthandler.h"
+#include "cell.h"
+#include "custompalette.h"
 #include "extension.h"
 #include "fatal.h"
 #include "hooker.h"
@@ -212,6 +214,35 @@ DEFINE_HOOK(0x0063F4D9, _TerrainClass_Take_Damage_LightSource_Patch, 6)
      *  Function return.
      */
     return 0x0063F4EF;
+}
+
+
+/**
+ *  Aftermath: Draws terrain objects that have their own palette (ART.INI
+ *  "Palette=") with it, lit like the cell they stand on. Tiberium spawning
+ *  terrain keeps the game's TiberiumDrawer (that branch skips this point),
+ *  and the shadow is drawn with the cell drawer as before.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x0063FB54, _TerrainClass_Draw_It_Custom_Palette_Patch, 7)
+{
+    GET(TerrainClass *, this_ptr, ESI);
+    GET(CellClass *, cellptr, EDI);
+    GET(int, tile_brightness, EAX);
+
+    ConvertClass *drawer = CustomPalette::Terrain_Converter(this_ptr->Class, cellptr->Drawer);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  Stolen bytes: the brightness goes to [ESP+0x28], the converter to EDX.
+     */
+    R->Stack(0x28, tile_brightness);
+    R->EDX(drawer);
+
+    return 0x0063FB5B;
 }
 
 

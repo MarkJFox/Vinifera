@@ -14,6 +14,7 @@
 #include "ccini.h"
 #include "extension.h"
 #include "terraintype.h"
+#include "tibsun_globals.h"
 #include "wwcrc.h"
 
 
@@ -34,7 +35,8 @@ TerrainTypeClassExtension::TerrainTypeClassExtension(const TerrainTypeClass* thi
     TiberiumSpawnStage(5, 5),
     TiberiumSpawnCount(1, 1),
     TiberiumSpawnStageFalloff(0),
-    IsTiberiumScatterSpawn(false)
+    IsTiberiumScatterSpawn(false),
+    PaletteName()
 {
     TerrainTypeExtensions.Add(this);
 }
@@ -46,7 +48,8 @@ TerrainTypeClassExtension::TerrainTypeClassExtension(const TerrainTypeClass* thi
  *  @author: CCHyper
  */
 TerrainTypeClassExtension::TerrainTypeClassExtension(const NoInitClass &noinit) :
-    ObjectTypeClassExtension(noinit)
+    ObjectTypeClassExtension(noinit),
+    PaletteName(noinit)
 {
 }
 
@@ -179,6 +182,16 @@ bool TerrainTypeClassExtension::Read_INI(CCINIClass &ini)
     TiberiumSpawnStage = get_min_max(ini, ini_name, "SpawnsTiberiumStage", TiberiumSpawnStage);
     TiberiumSpawnStageFalloff = ini.Get_Float(ini_name, "SpawnsTiberiumStageFalloff", TiberiumSpawnStageFalloff);
     IsTiberiumScatterSpawn = ini.Get_Bool(ini_name, "SpawnsTiberiumScattered", IsTiberiumScatterSpawn);
+
+    /**
+     *  Aftermath: Custom palette (ART.INI "Palette=" in the image section).
+     */
+    char palette_buffer[32];
+    if (ArtINI.Get_String(Graphic_Name(), "Palette", PaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        PaletteName = palette_buffer;
+    } else {
+        PaletteName.clear();
+    }
 
     IsInitialized = true;
     
