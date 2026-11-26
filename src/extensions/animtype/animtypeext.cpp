@@ -19,6 +19,7 @@
 #include "findmake.h"
 #include "particletype.h"
 #include "tibsun_defines.h"
+#include "tibsun_globals.h"
 #include "vinifera_saveload.h"
 #include "wwcrc.h"
 
@@ -56,7 +57,8 @@ AnimTypeClassExtension::AnimTypeClassExtension(const AnimTypeClass *this_ptr) :
     ExplosionDamage(0),
     IsShadow(false),
     DamageRate(-1),
-    StopSound(VOC_NONE)
+    StopSound(VOC_NONE),
+    PaletteName()
 {
     AnimTypeExtensions.Add(this);
 
@@ -87,7 +89,8 @@ AnimTypeClassExtension::AnimTypeClassExtension(const NoInitClass &noinit) :
     EndAnimsMinimum(noinit),
     EndAnimsMaximum(noinit),
     EndAnimsDelay(noinit),
-    MiddleFrames(noinit)
+    MiddleFrames(noinit),
+    PaletteName(noinit)
 {
 }
 
@@ -326,6 +329,16 @@ bool AnimTypeClassExtension::Read_INI(CCINIClass &ini)
     ParticleToSpawn = TGet_Class(ini, ini_name, "SpawnsParticle", ParticleToSpawn);
     NumberOfParticles = ini.Get_Int(ini_name, "NumParticles", NumberOfParticles);
     ParticleSpawnOffset = ini.Get_Point(ini_name, "SpawnsParticleOffset", ParticleSpawnOffset);
+
+    /**
+     *  Aftermath: Custom palette (ART.INI "Palette=").
+     */
+    char palette_buffer[32];
+    if (ArtINI.Get_String(ini_name, "Palette", PaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        PaletteName = palette_buffer;
+    } else {
+        PaletteName.clear();
+    }
 
     StartAnims = TGet_TypeList(ini, ini_name, "StartAnims", StartAnims);
     StartAnimsCount = ini.Get_IntList(ini_name, "StartAnimsCount", StartAnimsCount);

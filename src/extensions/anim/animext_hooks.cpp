@@ -18,11 +18,14 @@
 #include "animtypeext.h"
 #include "asserthandler.h"
 #include "cell.h"
+#include "colorscheme.h"
 #include "combat.h"
+#include "custompalette.h"
 #include "coord.h"
 #include "drawshape.h"
 #include "extension.h"
 #include "hooker.h"
+#include "house.h"
 #include "mouse.h"
 #include "overlay.h"
 #include "overlaytype.h"
@@ -35,6 +38,7 @@
 #include "syringe.h"
 #include "tactical.h"
 #include "target.h"
+#include "techno.h"
 #include "tiberium.h"
 #include "tibsun_globals.h"
 #include "tibsun_inline.h"
@@ -687,6 +691,125 @@ DEFINE_HOOK(0x00413D3E, _AnimClass_Constructor_Layer_Set_Z_Height_Patch, 0)
     }
 
     return 0x00413D63;
+}
+
+
+/**
+ *  Aftermath: Finds the color scheme to remap an AltPalette animation with.
+ *
+ *  The game never fills in AnimClass::OwnerHouse, but animations attached to
+ *  an object (a parachute on a paradropped unit, for example) know that
+ *  object, so its house is used. Animations without an owner keep the first
+ *  color scheme, as in the original game.
+ *
+ *  @author: Aftermath
+ */
+static int Anim_Remap_Scheme(const AnimClass *anim)
+{
+    const HouseClass *house = nullptr;
+
+    if (anim->xObject != nullptr && anim->xObject->Is_Techno()) {
+        house = static_cast<const TechnoClass *>(anim->xObject)->House;
+    }
+
+    if (house == nullptr && anim->OwnerHouse != HOUSE_NONE) {
+        for (int i = 0; i < Houses.Count(); ++i) {
+            if (Houses[i]->ID == anim->OwnerHouse) {
+                house = Houses[i];
+                break;
+            }
+        }
+    }
+
+    if (house == nullptr || house->Scheme < 0 || house->Scheme >= ColorSchemes.Count()) {
+        return 0;
+    }
+
+    return house->Scheme;
+}
+
+
+/**
+ *  Aftermath: Picks the converter for an animation that is not drawn with a
+ *  cell or building drawer. Returns nullptr to keep the game's choice.
+ *
+ *  - Palette= without AltPalette: the custom palette, no remap.
+ *  - Palette= with AltPalette=yes: the custom palette, remapped to the
+ *    owner's house color.
+ *  - AltPalette=yes alone: the UNIT palette remapped to the owner's house
+ *    color (the game always used the first color scheme). Only used where
+ *    the game itself would use the AltPalette converter.
+ *
+ *  @author: Aftermath
+ */
+static ConvertClass *Anim_Custom_Converter(const AnimClass *anim, bool alt_palette_supported)
+{
+    const AnimTypeClass *type = anim->Class;
+
+    if (type->IsAltPalette) {
+        const int scheme = Anim_Remap_Scheme(anim);
+
+        ConvertClass *drawer = CustomPalette::Anim_Remap_Converter(type, scheme);
+        if (drawer != nullptr) {
+            return drawer;
+        }
+
+        if (alt_palette_supported && ColorSchemes.Count() > 0) {
+            return ColorSchemes[scheme]->Converter;
+        }
+
+        return nullptr;
+    }
+
+    return CustomPalette::Anim_Converter(type);
+}
+
+
+/**
+ *  Aftermath: Custom palettes and owner remap for animations, in place of
+ *  AnimDrawer (ANIM.PAL) or the AltPalette converter. Veins, cell-attached
+ *  animations and animations that got a drawer from their building keep the
+ *  game's converter (those branches never reach this point).
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x004148AA, _AnimClass_Draw_It_Custom_Palette_Patch, 6)
+{
+    GET(AnimClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Anim_Custom_Converter(this_ptr, true);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    /**
+     *  The converter is kept at [ESP+0x14] for the draw calls further down.
+     */
+    R->Stack(0x14, drawer);
+
+    return 0x004148D0;
+}
+
+
+/**
+ *  Aftermath: Same for tiled animations, which load AnimDrawer directly for
+ *  each tile. The game ignores AltPalette here, so AltPalette alone still
+ *  draws with AnimDrawer; only a custom palette changes the converter.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00414AAB, _AnimClass_Draw_It_Tiled_Custom_Palette_Patch, 6)
+{
+    GET(AnimClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Anim_Custom_Converter(this_ptr, false);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->EDX(drawer);
+
+    return 0x00414AB1;
 }
 
 

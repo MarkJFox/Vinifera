@@ -11,7 +11,10 @@
 
 #include "custompalette.h"
 
+#include "animtype.h"
+#include "animtypeext.h"
 #include "ccfile.h"
+#include "convert.h"
 #include "colorscheme.h"
 #include "debughandler.h"
 #include "extension.h"
@@ -75,7 +78,19 @@ struct PaletteEntry
     bool IsValid = false;
     PaletteClass Palette;
     std::vector<SchemeDrawer *> Drawers;
+
+    /**
+     *  Converter without a house color ramp, built like the game's AnimDrawer
+     *  for ANIM.PAL. Used by animations.
+     */
+    ConvertClass *PlainDrawer = nullptr;
 };
+
+
+/**
+ *  The number of intensity levels the game gives AnimDrawer (Init_Theater).
+ */
+constexpr int ANIM_INTENSITY_LEVELS = 63;
 
 
 std::vector<PaletteEntry *> Entries;
@@ -229,30 +244,18 @@ void Update_Ion_Tint(SchemeDrawer &drawer, int intensity_levels)
     drawer.IsIonTinted = is_storm;
 }
 
-}
-
 
 /**
- *  Fetches the converter to draw the given type with for the given color scheme.
- *
- *  @author: Aftermath
+ *  Fetches the converter of the named palette for the given color scheme,
+ *  building it on first use.
  */
-ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int scheme)
+ConvertClass *Scheme_Converter(const char *name, int scheme)
 {
-    if (type == nullptr) {
-        return nullptr;
-    }
-
-    const TechnoTypeClassExtension *typeext = Extension::Fetch(type);
-    if (typeext == nullptr || typeext->PaletteName.empty()) {
-        return nullptr;
-    }
-
     if (scheme < 0 || scheme >= ColorSchemes.Count()) {
         return nullptr;
     }
 
-    PaletteEntry *entry = Fetch_Entry(typeext->PaletteName.c_str());
+    PaletteEntry *entry = Fetch_Entry(name);
     if (!entry->IsValid) {
         return nullptr;
     }
@@ -273,6 +276,82 @@ ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int s
     return drawer->Drawer;
 }
 
+}
+
+
+/**
+ *  Fetches the converter to draw the given type with for the given color scheme.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int scheme)
+{
+    if (type == nullptr) {
+        return nullptr;
+    }
+
+    const TechnoTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr || typeext->PaletteName.empty()) {
+        return nullptr;
+    }
+
+    return Scheme_Converter(typeext->PaletteName.c_str(), scheme);
+}
+
+
+/**
+ *  Fetches the remapping converter to draw the given animation type with for
+ *  the given color scheme.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Anim_Remap_Converter(const AnimTypeClass *type, int scheme)
+{
+    if (type == nullptr) {
+        return nullptr;
+    }
+
+    const AnimTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr || typeext->PaletteName.empty()) {
+        return nullptr;
+    }
+
+    return Scheme_Converter(typeext->PaletteName.c_str(), scheme);
+}
+
+
+/**
+ *  Fetches the converter to draw the given animation type with.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
+{
+    if (type == nullptr) {
+        return nullptr;
+    }
+
+    const AnimTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr || typeext->PaletteName.empty()) {
+        return nullptr;
+    }
+
+    PaletteEntry *entry = Fetch_Entry(typeext->PaletteName.c_str());
+    if (!entry->IsValid) {
+        return nullptr;
+    }
+
+    /**
+     *  Same setup as the game's AnimDrawer: no tint, lighting comes from the
+     *  brightness the draw call passes in.
+     */
+    if (entry->PlainDrawer == nullptr) {
+        entry->PlainDrawer = new ConvertClass(&entry->Palette, &GamePalette, VisibleSurface, ANIM_INTENSITY_LEVELS);
+    }
+
+    return entry->PlainDrawer;
+}
+
 
 /**
  *  Releases all palettes and converters.
@@ -282,6 +361,7 @@ ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int s
 void CustomPalette::Clear()
 {
     for (PaletteEntry *entry : Entries) {
+        delete entry->PlainDrawer;
         for (SchemeDrawer *drawer : entry->Drawers) {
             if (drawer != nullptr) {
                 delete drawer->Drawer;

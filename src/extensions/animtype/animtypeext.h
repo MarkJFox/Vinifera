@@ -140,4 +140,12 @@ AnimTypeClassExtension final : public ObjectTypeClassExtension
          *  The sound effect to play when this anim has finished.
          */
         VocType StopSound;
+
+        /**
+         *  Aftermath: Custom palette to draw this animation with in place of
+         *  ANIM.PAL (ART.INI "Palette="). Empty when not set. Resolved like
+         *  TechnoTypes: without an extension, the theater suffix and ".PAL"
+         *  are appended.
+         */
+        FixedString<32> PaletteName;
 };

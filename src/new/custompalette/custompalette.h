@@ -10,6 +10,7 @@
 #pragma once
 
 
+class AnimTypeClass;
 class ConvertClass;
 class TechnoTypeClass;
 
@@ -33,6 +34,22 @@ namespace CustomPalette
      *  not be loaded, in which case the caller keeps the game's own converter.
      */
     ConvertClass *Techno_Converter(const TechnoTypeClass *type, int scheme);
+
+    /**
+     *  Fetches the converter to draw the given animation type with, in place of
+     *  the game's AnimDrawer (ANIM.PAL). There is no house color ramp, as with
+     *  ANIM.PAL. Returns nullptr when the type has no custom palette or the file
+     *  could not be loaded.
+     */
+    ConvertClass *Anim_Converter(const AnimTypeClass *type);
+
+    /**
+     *  Fetches the converter to draw the given animation type with its own
+     *  palette and the house color ramp of the given color scheme (for
+     *  AltPalette=yes). Returns nullptr when the type has no custom palette
+     *  or the file could not be loaded.
+     */
+    ConvertClass *Anim_Remap_Converter(const AnimTypeClass *type, int scheme);
 
     /**
      *  Releases all palettes and converters. Called whenever the theater is set up,
