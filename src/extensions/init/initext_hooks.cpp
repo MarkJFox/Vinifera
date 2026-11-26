@@ -423,6 +423,15 @@ static void Reload_Side_Graphics(const SideMixFiles& retiring)
                 case RTTI_BUILDINGTYPE:
                     // Building graphics are reloaded together below.
                     break;
+                case RTTI_ISOTILETYPE:
+                    /**
+                     *  Iso tiles come from the theater MIXes, never from side
+                     *  MIXes. Their image is a heap copy owned by the tile type
+                     *  (IsFileLoaded), which the destructor frees. Replacing it
+                     *  leaks the copy and later frees a pointer the type does
+                     *  not own, which crashes the game when it exits.
+                     */
+                    break;
                 case RTTI_OVERLAYTYPE: {
                     auto overlay = static_cast<OverlayTypeClass*>(type);
                     if (!overlay->IsDemandLoad) {
