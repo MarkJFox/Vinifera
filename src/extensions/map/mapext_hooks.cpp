@@ -14,6 +14,7 @@
 #include "battleui.h"
 #include "buildingtypeext.h"
 #include "cell.h"
+#include "debughandler.h"
 #include "extension.h"
 #include "hooker.h"
 #include "map.h"
@@ -31,6 +32,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 
 
 /**
@@ -280,6 +283,132 @@ DEFINE_HOOK(0x00510C9A, _From_Sight_Dynamic_Sight_Range_Patch, 6)
     R->Stack(0x4C, occlusion_offsets_ptr);
 
     return 0x510CFB;
+}
+
+
+/**
+ *  #issue-aftermath: Fixes heap corruption after loading a saved game.
+ *
+ *  MouseClass::Load (0x00562680) reads the whole map object raw from the
+ *  stream (0x1D2C bytes). That also restores the headers of every vector
+ *  member as they were when the game was saved, including the old buffer
+ *  pointers and "allocated" flags. Clear_Scenario and the start of Load have
+ *  already released most of those buffers, so the next Clear(), Add() or
+ *  destructor frees or writes memory the vector no longer owns. Loading the
+ *  game itself works, but the heap is damaged from then on and the game
+ *  crashes later, usually on exit.
+ *
+ *  The raw data cannot carry the vector contents anyway, only the headers.
+ *  So the live headers are saved just before the read and put back right
+ *  after it. Every vector then owns exactly the buffer it owned before the
+ *  read, and the rest of Load rebuilds the contents as before.
+ *
+ *  @author: Aftermath
+ */
+namespace
+{
+struct VectorHeaderSnapshot
+{
+    void *Address;
+    size_t Size;
+    unsigned char Bytes[sizeof(DynamicVectorClass<Cell>)];
+};
+
+std::vector<VectorHeaderSnapshot> MapVectorSnapshots;
+
+template<typename T>
+void Add_Vector_Snapshot(T &vector)
+{
+    static_assert(sizeof(T) <= sizeof(VectorHeaderSnapshot::Bytes), "Vector header is larger than expected.");
+
+    VectorHeaderSnapshot snapshot;
+    snapshot.Address = &vector;
+    snapshot.Size = sizeof(T);
+    std::memcpy(snapshot.Bytes, &vector, sizeof(T));
+    MapVectorSnapshots.push_back(snapshot);
+}
+
+/**
+ *  Checks the TS++ layout against offsets known from MouseClass::Load. If
+ *  they do not match, the snapshot would write into the wrong members.
+ */
+bool Is_Map_Layout_Valid(MouseClass &map)
+{
+    const auto offset = [&](const void *member) {
+        return reinterpret_cast<const unsigned char *>(member) - reinterpret_cast<const unsigned char *>(&map);
+    };
+
+    /**
+     *  Offsets taken from a memory dump of the live map object (0x00748348).
+     */
+    const bool valid = offset(&map.ZoneConnections) == 0x40
+        && offset(&map.SubzoneTracking[0]) == 0x7C
+        && offset(&map.PendingBridgeCells) == 0xC4
+        && offset(&map.DirtyIceCells) == 0xDC
+        && offset(&map.CrackedIce) == 0x14C
+        && offset(&map.Array) == 0x164
+        && offset(&map.TaggedCells) == 0x1184
+        && offset(&map.BackgroundUpdateStack) == 0x122C
+        && offset(&map.PixelStack) == 0x1264
+        && offset(&map.Foundation[0]) == 0x1280
+        && offset(&map.Foundation[std::size(map.Foundation) - 1]) == 0x1478;
+
+    if (!valid) {
+        DEBUG_WARNING("MouseClass::Load: Map layout offsets: ZoneConnections {:X}, SubzoneTracking {:X}, PendingBridgeCells {:X}, DirtyIceCells {:X}, CrackedIce {:X}, Array {:X}, TaggedCells {:X}, BackgroundUpdateStack {:X}, PixelStack {:X}, Foundation {:X}-{:X}.\n",
+            (int)offset(&map.ZoneConnections), (int)offset(&map.SubzoneTracking[0]), (int)offset(&map.PendingBridgeCells),
+            (int)offset(&map.DirtyIceCells), (int)offset(&map.CrackedIce), (int)offset(&map.Array), (int)offset(&map.TaggedCells),
+            (int)offset(&map.BackgroundUpdateStack), (int)offset(&map.PixelStack), (int)offset(&map.Foundation[0]),
+            (int)offset(&map.Foundation[std::size(map.Foundation) - 1]));
+    }
+
+    return valid;
+}
+}
+
+DEFINE_HOOK(0x005627AC, _MouseClass_Load_Save_Vector_Headers_Patch, 6)
+{
+    GET(MouseClass *, this_ptr, EDI);
+
+    MapVectorSnapshots.clear();
+
+    if (!Is_Map_Layout_Valid(*this_ptr)) {
+        DEBUG_WARNING("MouseClass::Load: Unexpected map layout, vector headers are not preserved!\n");
+        return 0;
+    }
+
+    /**
+     *  MapClass.
+     */
+    Add_Vector_Snapshot(this_ptr->ZoneConnections);
+    for (auto &tracking : this_ptr->SubzoneTracking) {
+        Add_Vector_Snapshot(tracking);
+    }
+    Add_Vector_Snapshot(this_ptr->PendingBridgeCells);
+    Add_Vector_Snapshot(this_ptr->DirtyIceCells);
+    Add_Vector_Snapshot(this_ptr->CrackedIce);
+    Add_Vector_Snapshot(this_ptr->Array);
+    Add_Vector_Snapshot(this_ptr->TaggedCells);
+
+    /**
+     *  RadarClass.
+     */
+    Add_Vector_Snapshot(this_ptr->BackgroundUpdateStack);
+    Add_Vector_Snapshot(this_ptr->PixelStack);
+    for (auto &foundation : this_ptr->Foundation) {
+        Add_Vector_Snapshot(foundation);
+    }
+
+    return 0;
+}
+
+DEFINE_HOOK(0x005627D6, _MouseClass_Load_Restore_Vector_Headers_Patch, 6)
+{
+    for (const VectorHeaderSnapshot &snapshot : MapVectorSnapshots) {
+        std::memcpy(snapshot.Address, snapshot.Bytes, snapshot.Size);
+    }
+    MapVectorSnapshots.clear();
+
+    return 0;
 }
 
 
