@@ -1320,6 +1320,38 @@ LONG Vinifera_Exception_Handler(unsigned int e_code, struct _EXCEPTION_POINTERS 
     DEBUG_WARNING("Exception!\n");
 
     /**
+     *  Aftermath: Log the code and address right away. If the heap is damaged,
+     *  the dumper can hang before it writes the minidump or the EXCEPT file,
+     *  and this line is then the only record of where the crash happened.
+     */
+    if (e_info != nullptr && e_info->ExceptionRecord != nullptr && e_info->ContextRecord != nullptr) {
+        const EXCEPTION_RECORD *record = e_info->ExceptionRecord;
+        const unsigned access_type = record->NumberParameters >= 2 ? static_cast<unsigned>(record->ExceptionInformation[0]) : 0;
+        const uintptr_t access_address = record->NumberParameters >= 2 ? static_cast<uintptr_t>(record->ExceptionInformation[1]) : 0;
+        DEBUG_WARNING("Exception code 0x{:08X} at EIP 0x{:08X} (access {} at 0x{:08X}), ESP 0x{:08X}, EBP 0x{:08X}.\n",
+            static_cast<unsigned>(record->ExceptionCode), static_cast<unsigned>(e_info->ContextRecord->Eip),
+            access_type, static_cast<unsigned>(access_address),
+            static_cast<unsigned>(e_info->ContextRecord->Esp), static_cast<unsigned>(e_info->ContextRecord->Ebp));
+
+        /**
+         *  Return address candidates from the whole stack, enough to find the caller
+         *  without the dump.
+         */
+        const DWORD *stack = reinterpret_cast<const DWORD *>(e_info->ContextRecord->Esp);
+        const DWORD *stack_base = reinterpret_cast<const DWORD *>(reinterpret_cast<NT_TIB *>(NtCurrentTeb())->StackBase);
+        std::string trace;
+        for (int i = 0; stack + i < stack_base && i < 4096; ++i) {
+            const DWORD value = stack[i];
+            if ((value >= 0x00401000 && value < 0x006D0000) || (value >= 0x10000000 && value < 0x11000000)) {
+                char entry[16];
+                std::snprintf(entry, sizeof(entry), " %08X", static_cast<unsigned>(value));
+                trace += entry;
+            }
+        }
+        DEBUG_WARNING("Possible return addresses:{}\n", trace);
+    }
+
+    /**
      *  Clear previous exception info.
      */
     ExceptionInfoDescription.clear();
