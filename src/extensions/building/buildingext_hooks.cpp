@@ -1806,7 +1806,7 @@ void BuildingClassExt::_Draw_Overlays(const Point2D& coord, const Rect& rect)
                              *  Original code used NormalDrawer, which is the old Red Alert shape
                              *  drawer, so we need to use CameoDrawer here for the correct palette.
                              */
-                            Draw_Shape(*LogicalSurface, *CameoDrawer, shape, 0, coord, rect, SHAPE_ALPHA | SHAPE_WIN_REL | SHAPE_CENTER);
+                            Draw_Shape(*LogicalSurface, *CustomPalette::Cameo_Converter(obj->Techno_Type_Class()), shape, 0, coord, rect, SHAPE_ALPHA | SHAPE_WIN_REL | SHAPE_CENTER);
                         }
                     }
                 }

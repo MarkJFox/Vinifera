@@ -503,4 +503,10 @@ public:
      *  palette is used. See CustomPalette for how it is drawn.
      */
     FixedString<32> PaletteName;
+
+    /**
+     *  Aftermath: Palette for the cameo SHP in place of CAMEO.PAL (ART.INI
+     *  "CameoPalette=" in the image section, as in Ares). Empty when not set.
+     */
+    FixedString<32> CameoPaletteName;
 };

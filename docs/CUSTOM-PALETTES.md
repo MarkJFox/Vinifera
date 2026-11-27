@@ -1,6 +1,6 @@
-# Custom Paletten – SHP-Objekte, Animationen und Terrain
+# Custom Paletten – SHP-Objekte, Animationen, Terrain, Overlays, Projektile und Cameos
 
-Stand: 2026-11-26, Branch `feature/custom-palettes`. Gebäudekörper und Gebäudeanimationen im Spiel getestet. Freie Animationen und Remap im Spiel getestet. Terrain (`Palette=` in der Bild-Sektion eines TerrainTypes) kompiliert, aber noch **nicht im Spiel getestet**.
+Stand: 2026-11-26, Branch `feature/custom-palettes`. Gebäudekörper und Gebäudeanimationen im Spiel getestet. Freie Animationen und Remap im Spiel getestet. Terrain im Spiel getestet. Overlays, Mauern, Projektile und Cameos kompiliert, aber noch **nicht im Spiel getestet**.
 
 Hintergrund und Analyse: `../../analysis/CUSTOM-PALETTEN-BERICHT.md`.
 
@@ -35,7 +35,15 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
   - Beispiel: Explosionen mit `Palette=fire` ohne Remap, ein Fallschirm mit `Palette=para` und `AltPalette=yes` in Hausfarbe.
 - **Ausnahmen bei Animationen:** Tiberium-Adern (`IsVeins`), an Zellen gebundene Animationen und Animationen, die vom Gebäude einen Drawer bekommen haben, behalten den Converter des Spiels.
 - **Terrain** (Bäume, Felsen und andere TerrainTypes) mit `Palette=` wird mit dieser Palette statt der Iso-Palette des Theaters gezeichnet. Das Licht kommt wie bisher von der Zelle: Für jede Licht-Tönung gibt es einen eigenen Converter, wie bei den Iso-Tiles, und der Ionensturm wird vom Zell-Drawer übernommen. Keine Hausfarben. Terrain mit `SpawnsTiberium=yes` behält den Tiberium-Drawer, der Schatten wird wie bisher gezeichnet.
-- **Nicht erfasst:** Voxel, Projektile, Partikel, Overlays und Cameos.
+- **Overlays** (Felsen, Kisten, Gestrüpp usw.) mit `Palette=` in ihrer Bild-Sektion werden mit dieser Palette gezeichnet, beleuchtet wie die Zelle (wie Terrain). Tiberium, Adern (Veins) und Brücken behalten die Paletten des Spiels.
+- **Mauern** (`Wall=yes`) mit `Palette=` bekommen die Hausfarben-Rampe (Einträge 16–31) wie Einheiten. Das Farbschema ist dasselbe, das das Spiel für Mauern nimmt: die Farbe des lokalen Spielers.
+- **Projektile** (SHP) mit `Palette=` in ihrer Bild-Sektion ersetzen `PALETTE.PAL` bzw. `ANIM.PAL` (`AnimPalette=yes`). Neu ist `FirersPalette=yes` in der Rules-Sektion des Projektils, wie in Yuri's Revenge:
+  - Nur `Palette=`: eigene Palette ohne Remap.
+  - `Palette=` und `FirersPalette=yes`: eigene Palette in der Hausfarbe des Schützen.
+  - Nur `FirersPalette=yes`: UNIT-Palette in der Hausfarbe des Schützen.
+  - Ist der Schütze nicht mehr da, gilt das erste Farbschema. Der Schatten bleibt unverändert, Voxel-Projektile sind nicht erfasst.
+- **Cameos**: `CameoPalette=` in der Bild-Sektion eines TechnoTypes (wie in Ares) ersetzt `CAMEO.PAL` für das SHP-Cameo, in der Sidebar und in der Produktionsanzeige der Fabrik. Für Superwaffen gilt `SidebarPalette=` in ihrer Rules-Sektion. PNG/PCX-Cameos sind nicht betroffen. Cameo-Paletten am besten mit Endung angeben (`CameoPalette=mycameo.pal`), sonst wird wie überall das Theater-Suffix versucht.
+- **Nicht erfasst:** Voxel, Voxel-Projektile und Partikel.
 - **Hausfarben (nur Techno-Objekte):** Die Einträge 16–31 werden mit der Hausfarbe des Besitzers ersetzt, genau wie bei der UNIT-Palette. Die Farben an diesen Stellen der eigenen Palette werden also nie angezeigt.
 - **Licht (Techno-Objekte):** Helligkeit und Ionensturm-Tönung wirken wie bei normalen Objekten.
 - **Leuchtfarben 240–254:** Diese Einträge werden wie im Original (TS und YR, Tönungsmaske bei `0x70CEAC`) nicht abgedunkelt. Wer dort normale Farben ablegt oder sie im SHP benutzt, sieht helle Pixel bei dunklem Licht. Für Flächen, die nicht leuchten sollen, im SHP andere Indizes verwenden.
@@ -44,10 +52,10 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
 
 ## Technik
 
-- `TechnoTypeClassExtension::PaletteName`, `AnimTypeClassExtension::PaletteName` und `TerrainTypeClassExtension::PaletteName` halten den Namen aus `Palette=`. Sie werden mit dem Spielstand gespeichert.
+- `PaletteName` in den Erweiterungen von TechnoType, AnimType, TerrainType, OverlayType und BulletType hält den Namen aus `Palette=`. Dazu kommen `TechnoTypeClassExtension::CameoPaletteName`, `SuperWeaponTypeClassExtension::SidebarPaletteName` und `BulletTypeClassExtension::IsFirersPalette`. Sie werden mit dem Spielstand gespeichert.
 - `CustomPalette` (`src/new/custompalette/`) lädt jede Palette beim ersten Gebrauch. Pro Farbschema baut es einen `LightConvertClass` mit der Rampe der Hausfarbe des Schemas, derselben Zahl an Helligkeitsstufen und derselben Tönungsmaske wie das Spiel. Für Animationen gibt es pro Palette einen einfachen `ConvertClass` mit 63 Helligkeitsstufen, gebaut wie der `AnimDrawer` des Spiels. Für Terrain gibt es pro Palette und Licht-Tönung einen `LightConvertClass`, gebaut wie die Iso-Tile-Drawer (`IsometricTileTypeClass::Find_Or_Make_Drawer`). Tönung und Ionensturm-Zustand liest es aus dem Zell-Drawer (Offsets `0x1A0`–`0x1B8`, aus `LightConvertClass::Apply_Tint`). Converter werden nicht gespeichert und bei `Init_Theater` verworfen.
 - Ionensturm: Beim ersten Gebrauch nach Beginn oder Ende eines Sturms wird die Tönung nachgezogen (`Apply_Tint`).
-- Hooks: `0x00634F40` (normaler Converter) und `0x00635075` (verkleidete Infanterie) in `Techno_Draw_Object`. Für Gebäudeanimationen `0x004363CC` in `BuildingClass::Create_Anim`, `0x00435ADE` in `BuildingClass::Animation_AI` (setzt den Drawer in jedem Logik-Frame neu) und `0x00436668` in `BuildingClass::Update_Anim_Appearance` (dort ist `Set_Anim_Drawer` eingebettet). Für freie Animationen `0x004148AA` (Wahl von `AnimDrawer`/`AltPalette` in `AnimClass::Draw_It`) und `0x00414AAB` (gekachelte Animationen). Für Terrain `0x0063FB54` in `TerrainClass::Draw_It` (dort lädt das Spiel den Zell-Drawer).
+- Hooks: `0x00634F40` (normaler Converter) und `0x00635075` (verkleidete Infanterie) in `Techno_Draw_Object`. Für Gebäudeanimationen `0x004363CC` in `BuildingClass::Create_Anim`, `0x00435ADE` in `BuildingClass::Animation_AI` (setzt den Drawer in jedem Logik-Frame neu) und `0x00436668` in `BuildingClass::Update_Anim_Appearance` (dort ist `Set_Anim_Drawer` eingebettet). Für freie Animationen `0x004148AA` (Wahl von `AnimDrawer`/`AltPalette` in `AnimClass::Draw_It`) und `0x00414AAB` (gekachelte Animationen). Für Terrain `0x0063FB54` in `TerrainClass::Draw_It` (dort lädt das Spiel den Zell-Drawer). Für Overlays und Mauern `0x00455B1B` in `CellClass::Draw_Overlay` (gemeinsamer Draw_Shape-Aufruf, EDX hält den Converter). Für Projektile `0x00445EAA` in `BulletClass::Draw_It` (EBX hält `NormalDrawer` oder `AnimDrawer`). Cameos werden in `SidebarStripView::Draw_Cameo` und in der Fabrik-Anzeige in `buildingext_hooks.cpp` über `CustomPalette::Cameo_Converter` gezeichnet.
 
 ## Testplan
 
@@ -65,3 +73,7 @@ Die Palette ist eine normale TS-`.PAL`-Datei (256 Farben, 6 Bit pro Kanal).
 12. Fallschirm (Paradrop) mit `AltPalette=yes`, einmal mit und einmal ohne `Palette=`, bei zwei Hausfarben.
 13. Baum mit `Palette=` neben einem Baum ohne, bei Tag und Nacht, unter einer Lampe (Lichtquelle) und im Ionensturm.
 14. Terrain mit `Palette=` nach Speichern und Laden.
+15. Felsen oder anderes Overlay mit `Palette=`, bei Tag, Nacht und unter einer Lampe.
+16. Mauer mit `Palette=` bei zwei Hausfarben (lokaler Spieler wechseln).
+17. Projektil mit `Palette=`, mit `Palette=` und `FirersPalette=yes`, und nur mit `FirersPalette=yes`, von zwei Häusern abgefeuert.
+18. Einheit mit `CameoPalette=` in der Sidebar und in der Fabrik-Anzeige, Superwaffe mit `SidebarPalette=`.

@@ -17,6 +17,8 @@
 #include "bullet.h"
 #include "bullettype.h"
 #include "bullettypeext.h"
+#include "colorscheme.h"
+#include "custompalette.h"
 #include "extension.h"
 #include "hooker.h"
 #include "house.h"
@@ -199,6 +201,65 @@ DEFINE_HOOK(0x00446652, _BulletClass_Logic_ShakeScreen_Patch, 0)
      *  Jumps back to IsEMEffect check.
      */
     return 0x00446659;
+}
+
+
+/**
+ *  Aftermath: Draws projectiles with a custom palette (ART.INI "Palette=") and
+ *  with the house color of the firer (rules "FirersPalette=yes").
+ *
+ *  At this point BulletClass::Draw_It has picked NormalDrawer or, with
+ *  AnimPalette=yes, AnimDrawer into EBX for the projectile itself. The shadow
+ *  is drawn earlier with NormalDrawer and only darkens, so it is unchanged.
+ *
+ *  - Palette= alone: the custom palette, no remap.
+ *  - Palette= and FirersPalette=yes: the custom palette with the house color
+ *    ramp of the firer.
+ *  - FirersPalette=yes alone: the UNIT palette with the house color of the
+ *    firer, as in Yuri's Revenge.
+ *  A projectile whose firer is gone uses the first color scheme.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00445EAA, _BulletClass_Draw_It_Custom_Palette_Patch, 6)
+{
+    GET(BulletClass *, this_ptr, ESI);
+
+    const BulletTypeClass *type = this_ptr->Class;
+    if (type == nullptr) {
+        return 0;
+    }
+
+    const BulletTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr) {
+        return 0;
+    }
+
+    ConvertClass *drawer = nullptr;
+
+    if (typeext->IsFirersPalette) {
+        int scheme = 0;
+        if (this_ptr->Payback != nullptr && this_ptr->Payback->House != nullptr) {
+            scheme = this_ptr->Payback->House->Scheme;
+        }
+        if (scheme < 0 || scheme >= ColorSchemes.Count()) {
+            scheme = 0;
+        }
+
+        drawer = CustomPalette::Scheme_Converter(typeext->PaletteName.c_str(), scheme);
+        if (drawer == nullptr && ColorSchemes.Count() > 0) {
+            drawer = ColorSchemes[scheme]->Converter;
+        }
+
+    } else {
+        drawer = CustomPalette::Plain_Converter(typeext->PaletteName.c_str());
+    }
+
+    if (drawer != nullptr) {
+        R->EBX(drawer);
+    }
+
+    return 0;
 }
 
 

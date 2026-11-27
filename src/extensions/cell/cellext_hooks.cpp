@@ -17,6 +17,8 @@
 #include "buildingtypeext.h"
 #include "cellext.h"
 #include "cellext_const.h"
+#include "colorscheme.h"
+#include "custompalette.h"
 #include "extension.h"
 #include "foot.h"
 #include "hooker.h"
@@ -24,6 +26,7 @@
 #include "iomap.h"
 #include "isotiletype.h"
 #include "isotiletypeext.h"
+#include "lightconvert.h"
 #include "overlaytype.h"
 #include "overlaytypeext.h"
 #include "rules.h"
@@ -669,6 +672,55 @@ DEFINE_HOOK(0x004531E4, _CellClass_Update_Wall_Owner_Skip_Buildings_That_Cannot_
      *  Continue to further checks in the wall claiming logic.
      */
     return 0x004531EB;
+}
+
+
+/**
+ *  Aftermath: Draws overlays that have their own palette (ART.INI "Palette="
+ *  in the image section) with it.
+ *
+ *  This is the Draw_Shape call in CellClass::Draw_Overlay that walls, veins
+ *  and ordinary overlays share; EDX holds the converter the branch chose.
+ *  - Walls: the custom palette with the house color ramp of the same color
+ *    scheme the game uses for them.
+ *  - Ordinary overlays (rocks, crates, clutter): the custom palette lit like
+ *    the cell drawer.
+ *  - Veins keep the game's converter. Tiberium and bridges are drawn by other
+ *    calls and are not affected.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00455B1B, _CellClass_Draw_Overlay_Custom_Palette_Patch, 6)
+{
+    GET(CellClass *, cellptr, ESI);
+    GET(ConvertClass *, drawer, EDX);
+
+    if (cellptr->Overlay == OVERLAY_NONE || cellptr->Overlay >= OverlayTypes.Count()) {
+        return 0;
+    }
+
+    const OverlayTypeClass *otype = OverlayTypes[cellptr->Overlay];
+    const OverlayTypeClassExtension *otypeext = Extension::Fetch(otype);
+    if (otypeext == nullptr || otypeext->PaletteName.empty() || otype->IsVeins || otype->ID == OVERLAY_VEINS) {
+        return 0;
+    }
+
+    ConvertClass *custom = nullptr;
+
+    if (otype->IsWall) {
+        if (PlayerPtr != nullptr) {
+            custom = CustomPalette::Scheme_Converter(otypeext->PaletteName.c_str(), PlayerPtr->Scheme);
+        }
+
+    } else if (drawer == cellptr->Drawer) {
+        custom = CustomPalette::Tint_Converter(otypeext->PaletteName.c_str(), cellptr->Drawer);
+    }
+
+    if (custom != nullptr) {
+        R->EDX(custom);
+    }
+
+    return 0;
 }
 
 

@@ -77,4 +77,10 @@ SuperWeaponTypeClassExtension final : public AbstractTypeClassExtension
          *  Description for the extended sidebar tooltip.
          */
         char Description[200];
+
+        /**
+         *  Aftermath: Palette for the sidebar cameo SHP in place of CAMEO.PAL
+         *  ("SidebarPalette=", as in Ares). Empty when not set.
+         */
+        FixedString<32> SidebarPaletteName;
 };

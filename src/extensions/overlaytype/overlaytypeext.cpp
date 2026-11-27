@@ -14,6 +14,7 @@
 #include "ccini.h"
 #include "extension.h"
 #include "overlaytype.h"
+#include "tibsun_globals.h"
 
 
 /**
@@ -23,7 +24,8 @@
  */
 OverlayTypeClassExtension::OverlayTypeClassExtension(const OverlayTypeClass *this_ptr) :
     ObjectTypeClassExtension(this_ptr),
-    IsWaterTunnel(false)
+    IsWaterTunnel(false),
+    PaletteName()
 {
     OverlayTypeExtensions.Add(this);
 }
@@ -35,7 +37,8 @@ OverlayTypeClassExtension::OverlayTypeClassExtension(const OverlayTypeClass *thi
  *  @author: CCHyper
  */
 OverlayTypeClassExtension::OverlayTypeClassExtension(const NoInitClass &noinit) :
-    ObjectTypeClassExtension(noinit)
+    ObjectTypeClassExtension(noinit),
+    PaletteName(noinit)
 {
 }
 
@@ -137,6 +140,16 @@ bool OverlayTypeClassExtension::Read_INI(CCINIClass &ini)
     }
 
     const char *ini_name = Name();
+
+    /**
+     *  Aftermath: Custom palette (ART.INI "Palette=" in the image section).
+     */
+    char palette_buffer[32];
+    if (ArtINI.Get_String(Graphic_Name(), "Palette", PaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        PaletteName = palette_buffer;
+    } else {
+        PaletteName.clear();
+    }
 
     if (!ini.Is_Present(ini_name)) {
         return false;

@@ -52,4 +52,17 @@ BulletTypeClassExtension final : public ObjectTypeClassExtension
          *  If set, this projectile can only be used against targets on water.
          */
         bool IsTorpedo;
+
+        /**
+         *  Aftermath: Custom palette (ART.INI "Palette=" in the image section),
+         *  in place of PALETTE.PAL or ANIM.PAL (AnimPalette). Empty when not set.
+         */
+        FixedString<32> PaletteName;
+
+        /**
+         *  Aftermath: Draw the projectile with the house color of its firer
+         *  (Yuri's Revenge "FirersPalette"). With PaletteName the custom
+         *  palette is remapped, otherwise the UNIT palette.
+         */
+        bool IsFirersPalette;
 };

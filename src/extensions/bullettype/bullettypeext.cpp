@@ -25,7 +25,9 @@
 BulletTypeClassExtension::BulletTypeClassExtension(const BulletTypeClass *this_ptr) :
     ObjectTypeClassExtension(this_ptr),
     SpawnDelay(3),           // Default hardcoded value.
-    IsTorpedo(false)
+    IsTorpedo(false),
+    PaletteName(),
+    IsFirersPalette(false)
 {
     BulletTypeExtensions.Add(this);
 }
@@ -37,7 +39,8 @@ BulletTypeClassExtension::BulletTypeClassExtension(const BulletTypeClass *this_p
  *  @author: CCHyper
  */
 BulletTypeClassExtension::BulletTypeClassExtension(const NoInitClass &noinit) :
-    ObjectTypeClassExtension(noinit)
+    ObjectTypeClassExtension(noinit),
+    PaletteName(noinit)
 {
 }
 
@@ -141,9 +144,21 @@ bool BulletTypeClassExtension::Read_INI(CCINIClass &ini)
     const char *ini_name = Name();
     const char *graphic_name = Graphic_Name();
 
+    /**
+     *  Aftermath: Custom palette (ART.INI "Palette=" in the image section).
+     */
+    char palette_buffer[32];
+    if (ArtINI.Get_String(graphic_name, "Palette", PaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        PaletteName = palette_buffer;
+    } else {
+        PaletteName.clear();
+    }
+
     if (!ini.Is_Present(ini_name)) {
         return false;
     }
+
+    IsFirersPalette = ini.Get_Bool(ini_name, "FirersPalette", IsFirersPalette);
     
     IsTorpedo = ini.Get_Bool(ini_name, "Torpedo", IsTorpedo);
 

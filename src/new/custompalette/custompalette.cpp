@@ -23,6 +23,8 @@
 #include "mixfile.h"
 #include "palette.h"
 #include "scenario.h"
+#include "supertype.h"
+#include "supertypeext.h"
 #include "technotype.h"
 #include "technotypeext.h"
 #include "terraintype.h"
@@ -142,7 +144,7 @@ LightConvertTint Read_Tint(const LightConvertClass &drawer)
 /**
  *  The number of intensity levels the game gives AnimDrawer (Init_Theater).
  */
-constexpr int ANIM_INTENSITY_LEVELS = 63;
+constexpr int PLAIN_INTENSITY_LEVELS = 63;
 
 
 std::vector<PaletteEntry *> Entries;
@@ -297,13 +299,18 @@ void Update_Ion_Tint(SchemeDrawer &drawer, int intensity_levels)
 }
 
 
+}
+
+
 /**
- *  Fetches the converter of the named palette for the given color scheme,
- *  building it on first use.
+ *  Fetches the converter of the named palette with the house color ramp of the
+ *  given color scheme.
+ *
+ *  @author: Aftermath
  */
-ConvertClass *Scheme_Converter(const char *name, int scheme)
+ConvertClass *CustomPalette::Scheme_Converter(const char *name, int scheme)
 {
-    if (scheme < 0 || scheme >= ColorSchemes.Count()) {
+    if (name == nullptr || name[0] == '\0' || scheme < 0 || scheme >= ColorSchemes.Count()) {
         return nullptr;
     }
 
@@ -328,77 +335,29 @@ ConvertClass *Scheme_Converter(const char *name, int scheme)
     return drawer->Drawer;
 }
 
-}
-
 
 /**
- *  Fetches the converter to draw the given type with for the given color scheme.
+ *  Fetches the plain converter of the named palette.
  *
  *  @author: Aftermath
  */
-ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int scheme)
+ConvertClass *CustomPalette::Plain_Converter(const char *name)
 {
-    if (type == nullptr) {
+    if (name == nullptr || name[0] == '\0') {
         return nullptr;
     }
 
-    const TechnoTypeClassExtension *typeext = Extension::Fetch(type);
-    if (typeext == nullptr || typeext->PaletteName.empty()) {
-        return nullptr;
-    }
-
-    return Scheme_Converter(typeext->PaletteName.c_str(), scheme);
-}
-
-
-/**
- *  Fetches the remapping converter to draw the given animation type with for
- *  the given color scheme.
- *
- *  @author: Aftermath
- */
-ConvertClass *CustomPalette::Anim_Remap_Converter(const AnimTypeClass *type, int scheme)
-{
-    if (type == nullptr) {
-        return nullptr;
-    }
-
-    const AnimTypeClassExtension *typeext = Extension::Fetch(type);
-    if (typeext == nullptr || typeext->PaletteName.empty()) {
-        return nullptr;
-    }
-
-    return Scheme_Converter(typeext->PaletteName.c_str(), scheme);
-}
-
-
-/**
- *  Fetches the converter to draw the given animation type with.
- *
- *  @author: Aftermath
- */
-ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
-{
-    if (type == nullptr) {
-        return nullptr;
-    }
-
-    const AnimTypeClassExtension *typeext = Extension::Fetch(type);
-    if (typeext == nullptr || typeext->PaletteName.empty()) {
-        return nullptr;
-    }
-
-    PaletteEntry *entry = Fetch_Entry(typeext->PaletteName.c_str());
+    PaletteEntry *entry = Fetch_Entry(name);
     if (!entry->IsValid) {
         return nullptr;
     }
 
     /**
-     *  Same setup as the game's AnimDrawer: no tint, lighting comes from the
-     *  brightness the draw call passes in.
+     *  Same setup as the game's AnimDrawer, NormalDrawer and CameoDrawer: no
+     *  tint, lighting comes from the brightness the draw call passes in.
      */
     if (entry->PlainDrawer == nullptr) {
-        entry->PlainDrawer = new ConvertClass(&entry->Palette, &GamePalette, VisibleSurface, ANIM_INTENSITY_LEVELS);
+        entry->PlainDrawer = new ConvertClass(&entry->Palette, &GamePalette, VisibleSurface, PLAIN_INTENSITY_LEVELS);
     }
 
     return entry->PlainDrawer;
@@ -406,23 +365,17 @@ ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
 
 
 /**
- *  Fetches the converter to draw the given terrain type with in a cell whose
- *  own drawer is cell_drawer.
+ *  Fetches the converter of the named palette lit like cell_drawer.
  *
  *  @author: Aftermath
  */
-ConvertClass *CustomPalette::Terrain_Converter(const TerrainTypeClass *type, const LightConvertClass *cell_drawer)
+ConvertClass *CustomPalette::Tint_Converter(const char *name, const LightConvertClass *cell_drawer)
 {
-    if (type == nullptr || cell_drawer == nullptr) {
+    if (name == nullptr || name[0] == '\0' || cell_drawer == nullptr) {
         return nullptr;
     }
 
-    const TerrainTypeClassExtension *typeext = Extension::Fetch(type);
-    if (typeext == nullptr || typeext->PaletteName.empty()) {
-        return nullptr;
-    }
-
-    PaletteEntry *entry = Fetch_Entry(typeext->PaletteName.c_str());
+    PaletteEntry *entry = Fetch_Entry(name);
     if (!entry->IsValid) {
         return nullptr;
     }
@@ -470,6 +423,82 @@ ConvertClass *CustomPalette::Terrain_Converter(const TerrainTypeClass *type, con
     }
 
     return drawer->Drawer;
+}
+
+
+/**
+ *  Fetches the converter to draw the given type with for the given color scheme.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Techno_Converter(const TechnoTypeClass *type, int scheme)
+{
+    const TechnoTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    return typeext != nullptr ? Scheme_Converter(typeext->PaletteName.c_str(), scheme) : nullptr;
+}
+
+
+/**
+ *  Fetches the remapping converter to draw the given animation type with for
+ *  the given color scheme.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Anim_Remap_Converter(const AnimTypeClass *type, int scheme)
+{
+    const AnimTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    return typeext != nullptr ? Scheme_Converter(typeext->PaletteName.c_str(), scheme) : nullptr;
+}
+
+
+/**
+ *  Fetches the converter to draw the given animation type with.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Anim_Converter(const AnimTypeClass *type)
+{
+    const AnimTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    return typeext != nullptr ? Plain_Converter(typeext->PaletteName.c_str()) : nullptr;
+}
+
+
+/**
+ *  Fetches the converter to draw the given terrain type with in a cell whose
+ *  own drawer is cell_drawer.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Terrain_Converter(const TerrainTypeClass *type, const LightConvertClass *cell_drawer)
+{
+    const TerrainTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    return typeext != nullptr ? Tint_Converter(typeext->PaletteName.c_str(), cell_drawer) : nullptr;
+}
+
+
+/**
+ *  Fetches the converter to draw the cameo of the given type with.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Cameo_Converter(const TechnoTypeClass *type)
+{
+    const TechnoTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    ConvertClass *drawer = typeext != nullptr ? Plain_Converter(typeext->CameoPaletteName.c_str()) : nullptr;
+    return drawer != nullptr ? drawer : CameoDrawer;
+}
+
+
+/**
+ *  Fetches the converter to draw the sidebar cameo of the given super weapon with.
+ *
+ *  @author: Aftermath
+ */
+ConvertClass *CustomPalette::Cameo_Converter(const SuperWeaponTypeClass *type)
+{
+    const SuperWeaponTypeClassExtension *typeext = type != nullptr ? Extension::Fetch(type) : nullptr;
+    ConvertClass *drawer = typeext != nullptr ? Plain_Converter(typeext->SidebarPaletteName.c_str()) : nullptr;
+    return drawer != nullptr ? drawer : CameoDrawer;
 }
 
 

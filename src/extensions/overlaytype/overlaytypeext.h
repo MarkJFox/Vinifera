@@ -47,4 +47,11 @@ OverlayTypeClassExtension final : public ObjectTypeClassExtension
          *  Is this a water tunnel entrance?
          */
         bool IsWaterTunnel;
+
+        /**
+         *  Aftermath: Custom palette (ART.INI "Palette=" in the image section).
+         *  Walls take the house color ramp, other overlays the cell light.
+         *  Empty when not set.
+         */
+        FixedString<32> PaletteName;
 };

@@ -17,6 +17,7 @@
 #include "bsurface.h"
 #include "cameo_button.h"
 #include "colorscheme.h"
+#include "custompalette.h"
 #include "drawshape.h"
 #include "dsurface.h"
 #include "extension.h"
@@ -882,11 +883,13 @@ void SidebarStripView::Draw_Cameo(Surface& surface, const Rect& rect, const Buil
 {
     const ShapeSet* shapefile = nullptr;
     BSurface* image_surface = nullptr;
+    ConvertClass* drawer = CameoDrawer;
 
     if (item.Type != RTTI_SPECIAL) {
         const TechnoTypeClass* object = Fetch_Techno_Type(item.Type, item.ID);
         if (object != nullptr) {
             shapefile = object->Get_Cameo_Data();
+            drawer = CustomPalette::Cameo_Converter(object);
 
             const auto* technoext = Extension::Fetch(object);
             if (technoext->CameoImageSurface != nullptr) {
@@ -898,6 +901,7 @@ void SidebarStripView::Draw_Cameo(Surface& surface, const Rect& rect, const Buil
     } else {
         const SuperWeaponType superweapon = static_cast<SuperWeaponType>(item.ID);
         shapefile = Map.Column[0].Get_Special_Cameo(superweapon);
+        drawer = CustomPalette::Cameo_Converter(PlayerPtr->SuperWeapon[superweapon]->Class);
 
         const auto* supertypeext = Extension::Fetch(PlayerPtr->SuperWeapon[superweapon]->Class);
         if (supertypeext->CameoImageSurface != nullptr) {
@@ -913,7 +917,7 @@ void SidebarStripView::Draw_Cameo(Surface& surface, const Rect& rect, const Buil
         Rect image_rect(rect.X + point.X, rect.Y + point.Y, image_surface->Get_Width(), image_surface->Get_Height());
         SpriteCollection.Draw(image_rect, surface, *image_surface);
     } else if (shapefile != nullptr) {
-        Draw_Shape(surface, *CameoDrawer, shapefile, 0, point, rect, SHAPE_WIN_REL);
+        Draw_Shape(surface, *drawer, shapefile, 0, point, rect, SHAPE_WIN_REL);
     }
 }
 

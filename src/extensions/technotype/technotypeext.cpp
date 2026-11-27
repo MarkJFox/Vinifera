@@ -131,7 +131,8 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const TechnoTypeClass *this_p
     SlaveMinerReloadRate(25),
     SlaveMinerSlaveScan(-1),
     SlaveMinerHarvestRate(-1),
-    PaletteName()
+    PaletteName(),
+    CameoPaletteName()
 {
 }
 
@@ -149,7 +150,8 @@ TechnoTypeClassExtension::TechnoTypeClassExtension(const NoInitClass &noinit) :
     VoiceHarvest(noinit),
     BuiltAt(noinit),
     ScrapExplosion(noinit),
-    PaletteName(noinit)
+    PaletteName(noinit),
+    CameoPaletteName(noinit)
 {
 }
 
@@ -383,6 +385,13 @@ bool TechnoTypeClassExtension::Read_INI(CCINIClass &ini)
         PaletteName = palette_buffer;
     } else {
         PaletteName.clear();
+    }
+
+    char cameo_palette_buffer[32];
+    if (ArtINI.Get_String(graphic_name, "CameoPalette", CameoPaletteName.c_str(), cameo_palette_buffer, sizeof(cameo_palette_buffer)) > 0) {
+        CameoPaletteName = cameo_palette_buffer;
+    } else {
+        CameoPaletteName.clear();
     }
 
     CloakSound = ini.Get_VocType(ini_name, "CloakSound", CloakSound);

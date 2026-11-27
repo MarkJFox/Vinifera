@@ -30,7 +30,8 @@ SuperWeaponTypeClassExtension::SuperWeaponTypeClassExtension(const SuperWeaponTy
     CameoImageSurface(nullptr),
     ActionOutOfRange(ACTION_EMPULSE_RANGE),
     VoxMissileLaunched(VOX_MISSILE_LAUNCHED),
-    Description("")
+    Description(""),
+    SidebarPaletteName()
 {
     SuperWeaponTypeExtensions.Add(this);
 }
@@ -43,7 +44,8 @@ SuperWeaponTypeClassExtension::SuperWeaponTypeClassExtension(const SuperWeaponTy
  */
 SuperWeaponTypeClassExtension::SuperWeaponTypeClassExtension(const NoInitClass &noinit) :
     AbstractTypeClassExtension(noinit),
-    SidebarImage(noinit)
+    SidebarImage(noinit),
+    SidebarPaletteName(noinit)
 {
 }
 
@@ -163,6 +165,16 @@ bool SuperWeaponTypeClassExtension::Read_INI(CCINIClass &ini)
     const char *ini_name = Name();
 
     IsShowTimer = ini.Get_Bool(ini_name, "ShowTimer", IsShowTimer);
+
+    /**
+     *  Aftermath: Palette for the sidebar cameo.
+     */
+    char palette_buffer[32];
+    if (ini.Get_String(ini_name, "SidebarPalette", SidebarPaletteName.c_str(), palette_buffer, sizeof(palette_buffer)) > 0) {
+        SidebarPaletteName = palette_buffer;
+    } else {
+        SidebarPaletteName.clear();
+    }
 
     /**
      *  Fetch the cameo image surface if it exists.

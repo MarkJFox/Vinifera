@@ -14,6 +14,7 @@ class AnimTypeClass;
 class ConvertClass;
 class LightConvertClass;
 class TechnoTypeClass;
+class SuperWeaponTypeClass;
 class TerrainTypeClass;
 
 
@@ -30,6 +31,28 @@ class TerrainTypeClass;
  */
 namespace CustomPalette
 {
+    /**
+     *  Fetches the converter of the named palette with the house color ramp
+     *  (entries 16-31) of the given color scheme, lit and ion storm tinted like
+     *  the scheme's own converter. Returns nullptr for an empty name or a
+     *  palette that could not be loaded.
+     */
+    ConvertClass *Scheme_Converter(const char *name, int scheme);
+
+    /**
+     *  Fetches the plain converter of the named palette, built like the game's
+     *  AnimDrawer, NormalDrawer and CameoDrawer (no remap, no tint). Returns
+     *  nullptr for an empty name or a palette that could not be loaded.
+     */
+    ConvertClass *Plain_Converter(const char *name);
+
+    /**
+     *  Fetches the converter of the named palette with the light tint and ion
+     *  storm state of cell_drawer (a cell's drawer). Returns nullptr for an
+     *  empty name or a palette that could not be loaded.
+     */
+    ConvertClass *Tint_Converter(const char *name, const LightConvertClass *cell_drawer);
+
     /**
      *  Fetches the converter to draw the given type with for the given color scheme.
      *  Returns nullptr when the type has no custom palette or the palette file could
@@ -61,6 +84,20 @@ namespace CustomPalette
      *  loaded.
      */
     ConvertClass *Terrain_Converter(const TerrainTypeClass *type, const LightConvertClass *cell_drawer);
+
+    /**
+     *  Fetches the converter to draw the cameo of the given type with
+     *  (ART.INI "CameoPalette="). Returns CameoDrawer when the type has no
+     *  cameo palette or the file could not be loaded.
+     */
+    ConvertClass *Cameo_Converter(const TechnoTypeClass *type);
+
+    /**
+     *  Fetches the converter to draw the sidebar cameo of the given super
+     *  weapon with (rules "SidebarPalette="). Returns CameoDrawer when the type
+     *  has no sidebar palette or the file could not be loaded.
+     */
+    ConvertClass *Cameo_Converter(const SuperWeaponTypeClass *type);
 
     /**
      *  Releases all palettes and converters. Called whenever the theater is set up,
