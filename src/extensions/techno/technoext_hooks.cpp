@@ -4079,6 +4079,92 @@ DEFINE_HOOK(0x00635075, _TechnoClass_Techno_Draw_Object_Custom_Palette_Disguise_
 
 
 /**
+ *  Aftermath: Converter for a voxel object with a custom palette (ART.INI
+ *  "Palette="). Voxels are rendered into an 8-bit surface with palette
+ *  indices from the VPL and then blitted with the house color scheme's
+ *  converter; this swaps that converter for the custom palette with the same
+ *  house color ramp. Only types that are voxels themselves (Voxel=yes) are
+ *  affected, so a building's SHP palette does not reach its voxel turret.
+ *
+ *  @author: Aftermath
+ */
+static ConvertClass *Voxel_Custom_Converter(const TechnoClass *techno)
+{
+    if (techno == nullptr || techno->House == nullptr) {
+        return nullptr;
+    }
+
+    const TechnoTypeClass *type = techno->Techno_Type_Class();
+    if (type == nullptr || !type->IsVoxel) {
+        return nullptr;
+    }
+
+    return CustomPalette::Techno_Converter(type, techno->House->Scheme);
+}
+
+
+/**
+ *  Aftermath: Custom palette for voxels rendered fresh (TechnoClass::Draw_Voxel
+ *  render path). The converter goes to ESI.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00635D4E, _TechnoClass_Render_Voxel_Custom_Palette_Patch, 6)
+{
+    GET(TechnoClass *, this_ptr, EBP);
+
+    ConvertClass *drawer = Voxel_Custom_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->ESI(drawer);
+    return 0x00635D54;
+}
+
+
+/**
+ *  Aftermath: Custom palette for voxels drawn from the voxel cache
+ *  (TechnoClass::Techno_Blit_Voxel). The converter goes to ECX.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00636037, _TechnoClass_Techno_Blit_Voxel_Custom_Palette_Patch, 6)
+{
+    GET(TechnoClass *, this_ptr, EDI);
+
+    ConvertClass *drawer = Voxel_Custom_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->ECX(drawer);
+    return 0x0063603D;
+}
+
+
+/**
+ *  Aftermath: Custom palette for units composited from several voxels
+ *  (UnitClass::Unit_Blit_Voxel, final blit of the 8-bit composite). The
+ *  converter goes to ECX.
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00652108, _UnitClass_Unit_Blit_Voxel_Custom_Palette_Patch, 6)
+{
+    GET(TechnoClass *, this_ptr, ESI);
+
+    ConvertClass *drawer = Voxel_Custom_Converter(this_ptr);
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->ECX(drawer);
+    return 0x0065210E;
+}
+
+
+/**
  *  Main function for patching the hooks.
  */
 void TechnoClassExtension_Hooks()

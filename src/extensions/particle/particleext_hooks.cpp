@@ -10,10 +10,15 @@
 #include "always.h"
 
 #include "aircraft.h"
+#include "custompalette.h"
+#include "extension.h"
 #include "hooker.h"
 #include "house.h"
 #include "housetype.h"
+#include "particle.h"
 #include "particlesys.h"
+#include "particletype.h"
+#include "particletypeext.h"
 #include "rules.h"
 #include "scenario.h"
 #include "syringe.h"
@@ -69,6 +74,31 @@ DEFINE_HOOK(0x005A389C, _ParticleClass_Smoke_And_WeakGas_Behaviour_AI_Tiberium_D
 
     R->EDI(visceroid);
     return ContinueVisceroidPlacement;
+}
+
+
+/**
+ *  Aftermath: Draws particles that have their own palette (ART.INI "Palette="
+ *  in the image section) with it, in place of AnimDrawer (ANIM.PAL).
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x005A46DA, _ParticleClass_Draw_It_Custom_Palette_Patch, 6)
+{
+    GET(ParticleClass *, this_ptr, ESI);
+
+    if (this_ptr->Class == nullptr) {
+        return 0;
+    }
+
+    const ParticleTypeClassExtension *typeext = Extension::Fetch(this_ptr->Class);
+    ConvertClass *drawer = typeext != nullptr ? CustomPalette::Plain_Converter(typeext->PaletteName.c_str()) : nullptr;
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->EDX(drawer);
+    return 0x005A46E0;
 }
 
 

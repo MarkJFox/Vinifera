@@ -43,4 +43,9 @@ ParticleTypeClassExtension final : public ObjectTypeClassExtension
         virtual bool Read_INI(CCINIClass& ini) override;
 
     public:
+        /**
+         *  Aftermath: Custom palette to draw this particle with in place of
+         *  ANIM.PAL (ART.INI "Palette=" in the image section). Empty when not set.
+         */
+        FixedString<32> PaletteName;
 };

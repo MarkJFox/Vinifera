@@ -264,6 +264,98 @@ DEFINE_HOOK(0x00445EAA, _BulletClass_Draw_It_Custom_Palette_Patch, 6)
 
 
 /**
+ *  Aftermath: The bullet BulletClass::Draw_Voxel is drawing. The function keeps
+ *  "this" on the stack only, so it is taken here, where EAX holds it.
+ */
+static const BulletClass *_DrawnVoxelBullet = nullptr;
+
+DEFINE_HOOK(0x004473C6, _BulletClass_Draw_Voxel_Fetch_This_Patch, 11)
+{
+    GET(const BulletClass *, this_ptr, EAX);
+
+    _DrawnVoxelBullet = this_ptr;
+
+    return 0;
+}
+
+
+/**
+ *  Aftermath: Converter for a voxel projectile. The game blits it with the
+ *  converter of the projectile's own color scheme (BulletType Color=).
+ *
+ *  - Palette=: the custom palette with the house color ramp of that scheme,
+ *    or of the firer with FirersPalette=yes.
+ *  - FirersPalette=yes alone: the game's palette with the firer's house color.
+ *
+ *  @author: Aftermath
+ */
+static ConvertClass *Voxel_Bullet_Converter()
+{
+    const BulletClass *bullet = _DrawnVoxelBullet;
+    if (bullet == nullptr || bullet->Class == nullptr) {
+        return nullptr;
+    }
+
+    const BulletTypeClass *type = bullet->Class;
+    const BulletTypeClassExtension *typeext = Extension::Fetch(type);
+    if (typeext == nullptr || (typeext->PaletteName.empty() && !typeext->IsFirersPalette)) {
+        return nullptr;
+    }
+
+    int scheme = type->Color;
+    if (typeext->IsFirersPalette && bullet->Payback != nullptr && bullet->Payback->House != nullptr) {
+        scheme = bullet->Payback->House->Scheme;
+    }
+    if (scheme < 0 || scheme >= ColorSchemes.Count()) {
+        scheme = 0;
+    }
+
+    ConvertClass *drawer = CustomPalette::Scheme_Converter(typeext->PaletteName.c_str(), scheme);
+    if (drawer == nullptr && typeext->IsFirersPalette && ColorSchemes.Count() > 0) {
+        drawer = ColorSchemes[scheme]->Converter;
+    }
+
+    return drawer;
+}
+
+
+/**
+ *  Aftermath: Converter for the blitter lookup in BulletClass::Draw_Voxel (ECX).
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x004473EE, _BulletClass_Draw_Voxel_Blitter_Custom_Palette_Patch, 6)
+{
+    ConvertClass *drawer = Voxel_Bullet_Converter();
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->ECX(drawer);
+    return 0x004473F4;
+}
+
+
+/**
+ *  Aftermath: Converter for the Blit_Block call in BulletClass::Draw_Voxel (EDX).
+ *
+ *  @author: Aftermath
+ */
+DEFINE_HOOK(0x00447416, _BulletClass_Draw_Voxel_Custom_Palette_Patch, 6)
+{
+    ConvertClass *drawer = Voxel_Bullet_Converter();
+    _DrawnVoxelBullet = nullptr;
+
+    if (drawer == nullptr) {
+        return 0;
+    }
+
+    R->EDX(drawer);
+    return 0x0044741C;
+}
+
+
+/**
  *  Main function for patching the hooks.
  */
 void BulletClassExtension_Hooks()
